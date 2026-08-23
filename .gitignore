@@ -2,3 +2,5 @@ out/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+e2e/node_modules/
+e2e/out/

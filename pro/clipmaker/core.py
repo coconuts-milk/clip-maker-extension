@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -82,17 +83,21 @@ def _require(cmd: str) -> str:
 
 
 def download_source(video_id: str, out_dir: str, run: Callable = subprocess.run) -> str:
-    """yt-dlp で元動画を取得し、ファイルパスを返す。
+    """yt-dlp（Python モジュール）で元動画を取得し、ファイルパスを返す。
 
     Tests:
         - yt-dlp の終了コードが 0 以外なら RuntimeError
         - 出力ファイルが無ければ RuntimeError
     """
-    ytdlp = _require("yt-dlp")
     out = os.path.join(out_dir, f"{video_id}.source.mp4")
     if os.path.exists(out):
         return out
-    r = run([ytdlp, "-f", "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]", "-o", out,
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError("yt-dlp が未インストールです: pip install yt-dlp") from e
+    r = run([sys.executable, "-m", "yt_dlp", "-f", "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b",
+             "--merge-output-format", "mp4", "-o", out,
              f"https://www.youtube.com/watch?v={video_id}"], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"yt-dlp 失敗 ({r.returncode}): {r.stderr.strip()[-500:]}")

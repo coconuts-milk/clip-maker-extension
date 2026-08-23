@@ -33,7 +33,7 @@ document.getElementById("go").addEventListener("click", async () => {
 
   const base = `${r.clip.video_id}_${Math.floor(r.clip.start_sec)}`;
   await download(`${base}.clip.json`, JSON.stringify(r.clip, null, 2), "application/json");
-  await download(`${base}.srt`, toSrt(r.captions.cues), "text/plain");
+  await download(`${base}.srt`, toSrt(r.captions.cues), "application/x-subrip");   // text/plain だと Chrome が .txt に改名する（E2E で実測）
   await download(`${base}.comments.json`, JSON.stringify(r.comments, null, 2), "application/json");
 
   const warn = r.captions.error ? `\n字幕: ${r.captions.error}` : `\n字幕: ${r.captions.cues.length} 行（${r.captions.lang}）`;

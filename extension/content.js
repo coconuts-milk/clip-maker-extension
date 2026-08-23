@@ -21,24 +21,48 @@ function playerResponse() {
   return null;
 }
 
+// inject.js（main world）が横取りしたプレーヤーの字幕応答。{url, body}
+let capturedCaptions = null;
+window.addEventListener("clip-maker-captions", ev => {
+  try { capturedCaptions = JSON.parse(ev.detail); } catch (_) { /* 壊れた detail は無視 */ }
+});
+
+const CAPTION_WAIT_MS = 6000;   // CC ボタンを押してからプレーヤーが字幕を取りに行くまでの待ち上限
+
+function ensureCaptionsOn() {
+  const btn = document.querySelector(".ytp-subtitles-button");
+  if (btn && btn.getAttribute("aria-pressed") !== "true") btn.click();
+}
+
+async function waitCaptured() {
+  const t0 = Date.now();
+  while (!capturedCaptions && Date.now() - t0 < CAPTION_WAIT_MS) {
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return capturedCaptions;
+}
+
 async function fetchCaptions(start, end) {
   const pr = playerResponse();
   const tracks = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
                  pr.captions.playerCaptionsTracklistRenderer.captionTracks;
   if (!tracks || !tracks.length) return { error: "この動画には字幕トラックがありません", cues: [] };
-  const track = tracks.find(t => /^ja/.test(t.languageCode)) || tracks[0];
-  const res = await fetch(track.baseUrl + "&fmt=json3");
-  if (!res.ok) return { error: `字幕の取得に失敗 (${res.status})`, cues: [] };
-  const j = await res.json();
+  // 拡張から timedtext を直接 fetch すると pot トークン無しで空が返るため、プレーヤーの通信を使う。
+  if (!capturedCaptions) { ensureCaptionsOn(); await waitCaptured(); }
+  if (!capturedCaptions) return { error: "字幕を取得できませんでした。プレーヤーの CC ボタンを押してからもう一度お試しください", cues: [] };
+  const lang = new URL(capturedCaptions.url, location.href).searchParams.get("lang") || "";
+  let j;
+  try { j = JSON.parse(capturedCaptions.body); }
+  catch (_) { return { error: "字幕の形式が想定外（json3 ではない）", cues: [] }; }
   const cues = [];
   for (const ev of (j.events || [])) {
     if (!ev.segs) continue;
     const t0 = ev.tStartMs / 1000, t1 = t0 + (ev.dDurationMs || 0) / 1000;
     if (t1 < start || t0 > end) continue;
     const text = ev.segs.map(s => s.utf8).join("").replace(/\n/g, " ").trim();
-    if (text) cues.push({ start: Math.max(t0, start) - start, end: Math.min(t1, end) - start, text });
+    if (text) cues.push({ start: +(Math.max(t0, start) - start).toFixed(3), end: +(Math.min(t1, end) - start).toFixed(3), text });
   }
-  return { lang: track.languageCode, cues };
+  return { lang, cues };
 }
 
 function collectComments() {
@@ -61,8 +85,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!v || !id) { sendResponse({ error: "YouTube の再生ページで使ってください" }); return; }
     const start = Number.isFinite(msg.start) ? msg.start : v.currentTime;
     const len = Math.min(Math.max(msg.length || 15, 1), MAX_CLIP_SEC);
-    const end = Math.min(start + len, v.duration || start + len);
-    const title = playerResponse()?.videoDetails?.title || document.title;
+    const end = Math.min(start + len, Number.isFinite(v.duration) ? v.duration : start + len);
+    const pr = playerResponse();
+    const title = (pr && pr.videoDetails && pr.videoDetails.title) || document.title;
     const captions = await fetchCaptions(start, end);
     sendResponse({
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title,
@@ -71,6 +96,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       captions,
       comments: collectComments(),
     });
-  })();
+  })().catch(e => sendResponse({ error: `取得中にエラー: ${e && e.message ? e.message : e}` }));
   return true;   // async sendResponse
 });

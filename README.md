@@ -23,7 +23,12 @@ clipmaker render ダウンロード/clip-maker/<id>_<秒>.clip.json   # 同名 .
 - 字幕は動画側にトラックがある場合だけ取れる（無い場合はエラー表示。黙って空にしない）。
 - Chrome Web Store 審査: `downloads` 権限の用途説明が必要。
 
-## テスト
+## テスト・実機確認（2026-08-23）
 ```
-python -m pytest tests -q
+python -m pytest tests -q          # プロ版の単体 8 件（ffmpeg/yt-dlp は差し替え）
+cd e2e && npm i && node extension_e2e.js   # 拡張の実機 E2E（本物の Chrome + YouTube、窓が一瞬開く）
 ```
+確認済みの範囲:
+- 拡張: Chrome 151 で YouTube `jNQXAC9IVRw` を開き、popup の保存ボタン経由で `clip.json` / `srt`（字幕 2 行・実データ）/ `comments.json`（表示中コメント）の 3 ファイルが `ダウンロード/clip-maker/` に落ちる（`E2E_OK`）。
+- プロ版: 上で落ちた `clip.json` + `srt` をそのまま `clipmaker render` に通し、10 秒の h264/aac mp4 に字幕が焼き込まれたのを画像で確認。
+- 字幕の取り方: 拡張から timedtext を直接 fetch すると YouTube が空を返す（pot トークン必須）ため、プレーヤー自身の字幕通信を `inject.js` で横取りする。headless / 自動操作フラグ付きの Chrome でも空になるので E2E は通常ウィンドウで回す。
