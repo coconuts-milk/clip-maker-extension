@@ -19,16 +19,37 @@ function download(name, text, mime) {
   return chrome.downloads.download({ url, filename: "clip-maker/" + name, saveAs: false });
 }
 
+function parseStart(raw) {
+  // "5049" / "5049.5" / "1:24:09" / "24:09" を秒に変換。不正なら null。
+  const s = raw.trim();
+  if (s === "") return undefined;
+  if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
+  const m = s.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/);
+  if (!m) return null;
+  return (Number(m[1] || 0)) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
 document.getElementById("go").addEventListener("click", async () => {
   const msg = document.getElementById("msg");
   msg.textContent = "取得中…"; msg.id = "msg";
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const startRaw = document.getElementById("start").value;
-  const req = { type: "CLIP_CAPTURE", start: startRaw === "" ? undefined : Number(startRaw),
+  const start = parseStart(document.getElementById("start").value);
+  if (start === null) { msg.textContent = "開始時間は「5049」か「1:24:09」の形式で入れてください"; return; }
+  const req = { type: "CLIP_CAPTURE", start,
                 length: Number(document.getElementById("length").value) };
+  if (!tab || !/^https:\/\/(www|m)\.youtube\.com\//.test(tab.url || "")) {
+    msg.textContent = "YouTube の動画ページを開いた状態で使ってください"; return;
+  }
   let r;
   try { r = await chrome.tabs.sendMessage(tab.id, req); }
-  catch (e) { msg.textContent = "ページと通信できません。YouTube の動画ページを開いて再読み込みしてください。"; return; }
+  catch (e) {
+    // 拡張を入れる前から開いていたタブには content script が入っていない → その場で注入して 1 回だけ再試行
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["inject.js"], world: "MAIN" });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      r = await chrome.tabs.sendMessage(tab.id, req);
+    } catch (e2) { msg.textContent = "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度押してください。"; return; }
+  }
   if (!r || r.error) { msg.textContent = (r && r.error) || "取得に失敗しました"; return; }
 
   const base = `${r.clip.video_id}_${Math.floor(r.clip.start_sec)}`;

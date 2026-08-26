@@ -26,6 +26,14 @@ let capturedCaptions = null;
 window.addEventListener("clip-maker-captions", ev => {
   try { capturedCaptions = JSON.parse(ev.detail); } catch (_) { /* 壊れた detail は無視 */ }
 });
+// SPA 遷移で前の動画の字幕が残ると別動画の字幕を保存してしまう → 遷移のたびに捨てる
+window.addEventListener("yt-navigate-finish", () => { capturedCaptions = null; });
+
+function capturedIsForCurrentVideo() {
+  if (!capturedCaptions) return false;
+  const v = new URL(capturedCaptions.url, location.href).searchParams.get("v");
+  return !v || v === videoId();   // timedtext URL に v= が無い形式は動画照合をスキップ
+}
 
 const CAPTION_WAIT_MS = 6000;   // CC ボタンを押してからプレーヤーが字幕を取りに行くまでの待ち上限
 
@@ -48,8 +56,8 @@ async function fetchCaptions(start, end) {
                  pr.captions.playerCaptionsTracklistRenderer.captionTracks;
   if (!tracks || !tracks.length) return { error: "この動画には字幕トラックがありません", cues: [] };
   // 拡張から timedtext を直接 fetch すると pot トークン無しで空が返るため、プレーヤーの通信を使う。
-  if (!capturedCaptions) { ensureCaptionsOn(); await waitCaptured(); }
-  if (!capturedCaptions) return { error: "字幕を取得できませんでした。プレーヤーの CC ボタンを押してからもう一度お試しください", cues: [] };
+  if (!capturedIsForCurrentVideo()) { capturedCaptions = null; ensureCaptionsOn(); await waitCaptured(); }
+  if (!capturedIsForCurrentVideo()) return { error: "字幕を取得できませんでした。プレーヤーの CC ボタンを押してからもう一度お試しください", cues: [] };
   const lang = new URL(capturedCaptions.url, location.href).searchParams.get("lang") || "";
   let j;
   try { j = JSON.parse(capturedCaptions.body); }
