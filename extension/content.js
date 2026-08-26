@@ -1,7 +1,6 @@
 // Clip Maker content script — YouTube 再生ページから「現在位置・字幕・表示中コメント」を取る。
 // 設計原則: 取れないものは空で誤魔化さず error を返す（呼び側で表示する）。
-
-const MAX_CLIP_SEC = 30;   // 無料版の上限（仕様: 30 秒上限）
+// MAX_CLIP_SEC は common.js（manifest で先に読み込まれる）で定義。
 
 function videoId() {
   const u = new URL(location.href);

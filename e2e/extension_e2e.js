@@ -1,5 +1,6 @@
 // 拡張の実機 E2E: 本物の Chrome に拡張を読み込み、YouTube 動画ページで content.js に
 // CLIP_CAPTURE を送り、clip / captions / comments が実データで返ることを確認する。
+// さらに 2 段階フロー本線（popup → 編集画面タブ → マスクをドラッグ描画 → 3 ファイル保存）を通す。
 // 使い方: node e2e/extension_e2e.js [videoId] [start秒] [length秒]
 const puppeteer = require("puppeteer-core");
 const path = require("path");
@@ -55,30 +56,54 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
                result.clip.end_sec - result.clip.start_sec <= result.clip.max_clip_sec &&
                result.captions && result.captions.cues && result.captions.cues.length > 0 &&
                Array.isArray(result.comments) && result.comments.length > 0;
-    // popup の保存ボタン経路: 実際に 3 ファイル（clip.json / srt / comments.json）がダウンロード完了するか
+    // 2 段階フロー本線: popup「吸い出して編集画面を開く」→ 編集タブでマスクをドラッグ描画 → 保存 → 3 ファイル
     // 保存先は本物と同じ「ダウンロード/clip-maker/」。CDP で downloadPath を上書きすると名前が download.json に潰れるので触らない
+    const before = await popup.evaluate(async () => (await chrome.downloads.search({ state: "complete" })).length);
     await page.bringToFront();   // 本物の popup と同じく「アクティブタブ＝YouTube」にする
     await popup.evaluate((start, len) => {
       if (start !== undefined && start !== null) document.getElementById("start").value = String(start);
       document.getElementById("length").value = String(len);
       document.getElementById("go").click();
     }, START === undefined ? null : START, LEN);
-    const files = await popup.evaluate(async () => {
+    const edTarget = await browser.waitForTarget(t => t.url().includes("/editor.html"), { timeout: 15000 });
+    const editor = await edTarget.page();
+    await editor.bringToFront();
+    await editor.waitForSelector("#overlay", { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 1500));   // draft 読込と描画待ち
+    // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当）
+    await editor.click("#drawmode");
+    const box = await (await editor.$("#overlay")).boundingBox();
+    await editor.mouse.move(box.x + box.width * 0.70, box.y + box.height * 0.05);
+    await editor.mouse.down();
+    await editor.mouse.move(box.x + box.width * 0.95, box.y + box.height * 0.17, { steps: 5 });
+    await editor.mouse.up();
+    const maskRows = await editor.evaluate(() => document.querySelectorAll("#masks tbody tr").length);
+    await editor.click("#save");
+    const files = await editor.evaluate(async (before) => {
       for (let i = 0; i < 50; i++) {
         const items = await chrome.downloads.search({ state: "complete" });
-        if (items.length >= 3) return items.map(it => it.filename);
+        if (items.length >= before + 3) return items.map(it => it.filename);
         await new Promise(r => setTimeout(r, 300));
       }
       return [];
-    });
-    console.log("popup msg:", await popup.evaluate(() => document.querySelector("#msg, #ok").textContent));
+    }, before);
+    console.log("editor msg:", await editor.evaluate(() => document.getElementById("msg").textContent));
     const fs = require("fs");
     const saved = files.filter(f => fs.existsSync(f) && fs.statSync(f).size > 0);
     console.log("downloaded:", saved);
     // 同名ファイルが既にあると Chrome が「name (1).ext」にリネームするので endsWith では判定しない
     const dlOk = saved.some(f => /\.clip[^\\]*\.json$/.test(f)) && saved.some(f => /\.srt$/.test(f)) && saved.some(f => /\.comments[^\\]*\.json$/.test(f));
-    if (dlOk) console.log("srt head:", fs.readFileSync(saved.find(f => f.endsWith(".srt")), "utf8").split(String.fromCharCode(10)).slice(0, 4).map(l => l.trim()).join(" | "));
-    console.log(ok && dlOk ? "E2E_OK" : "E2E_FAILED");
-    process.exitCode = ok && dlOk ? 0 : 1;
+    let maskOk = false;
+    if (dlOk) {
+      // 最新の clip.json にドラッグしたマスクが入っているか
+      const clips = saved.filter(f => /\.clip[^\\]*\.json$/.test(f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      const clip = JSON.parse(fs.readFileSync(clips[0], "utf8"));
+      maskOk = Array.isArray(clip.masks) && clip.masks.length === 1 && clip.masks[0].w > 0 && clip.masks[0].h > 0;
+      console.log("masks in clip.json:", JSON.stringify(clip.masks));
+      console.log("srt head:", fs.readFileSync(saved.find(f => f.endsWith(".srt")), "utf8").split(String.fromCharCode(10)).slice(0, 4).map(l => l.trim()).join(" | "));
+    }
+    console.log("mask rows in editor:", maskRows);
+    console.log(ok && dlOk && maskOk && maskRows === 1 ? "E2E_OK" : "E2E_FAILED");
+    process.exitCode = ok && dlOk && maskOk && maskRows === 1 ? 0 : 1;
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });
