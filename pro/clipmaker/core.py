@@ -127,11 +127,16 @@ def download_source(video_id: str, out_dir: str, run: Callable = subprocess.run,
     """
     if (start is None) != (end is None):
         raise ValueError("start と end は両方指定するか両方 None にしてください")
+    fmt = "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b"
     if start is not None:
         sec_start = max(0.0, start - SECTION_PAD_SEC)
         sec_end = end + SECTION_PAD_SEC
         out = os.path.join(out_dir, f"{video_id}_{int(sec_start)}_{int(sec_end)}.section.mp4")
         section = ["--download-sections", f"*{sec_start:.0f}-{sec_end:.0f}", "--force-keyframes-at-cuts"]
+        # 区間ダウンロードは HLS(m3u8) を優先する。https 形式だと yt-dlp が ffmpeg 直結で
+        # ダウンロードし YouTube に速度を絞られて実測 70 分以上かかる（HLS は同じ 26 秒区間が約 1 分）。
+        # HLS が無い動画だけ通常形式に落ちる（フォーマット選好であり P-03 のフォールバックではない）。
+        fmt = f"bv*[ext=mp4][height<=1080][protocol^=m3u8]+ba[protocol^=m3u8]/{fmt}"
     else:
         out = os.path.join(out_dir, f"{video_id}.source.mp4")
         section = []
@@ -141,7 +146,7 @@ def download_source(video_id: str, out_dir: str, run: Callable = subprocess.run,
         import yt_dlp  # noqa: F401
     except ImportError as e:
         raise RuntimeError("yt-dlp が未インストールです: pip install yt-dlp") from e
-    r = run([sys.executable, "-m", "yt_dlp", "-f", "bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4]/b",
+    r = run([sys.executable, "-m", "yt_dlp", "-f", fmt,
              "--merge-output-format", "mp4", *section, "-o", out,
              f"https://www.youtube.com/watch?v={video_id}"], capture_output=True, text=True)
     if r.returncode != 0:
