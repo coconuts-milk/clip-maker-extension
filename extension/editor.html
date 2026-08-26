@@ -5,23 +5,27 @@
   body { font: 14px system-ui, sans-serif; color: #222; background: #f6f6f4; margin: 0; }
   main { max-width: 900px; margin: 0 auto; padding: 16px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
-  h2 { font-size: 15px; margin: 20px 0 6px; }
-  .sub { color: #666; font-size: 12px; margin-bottom: 12px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  .sub { color: #666; font-size: 12px; margin-bottom: 8px; }
+  .steps { background: #eef4fb; border-left: 4px solid #1d5fa3; padding: 8px 12px; border-radius: 0 4px 4px 0; margin-bottom: 12px; font-size: 13px; }
   section { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
   table { width: 100%; border-collapse: collapse; }
-  td, th { padding: 3px 4px; text-align: left; vertical-align: top; }
+  td, th { padding: 3px 4px; text-align: left; vertical-align: top; font-weight: normal; }
+  th { color: #666; font-size: 12px; }
   input[type=number] { width: 72px; }
   input[type=text], textarea { width: 100%; box-sizing: border-box; }
+  input[type=text].time { width: 100px; font-size: 15px; text-align: center; }   /* input[type=text] の全幅指定より後に置いて勝たせる */
   button { padding: 5px 10px; }
   .del { color: #b00; background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
   .row-add { margin-top: 6px; }
+  #framebtns { margin-bottom: 6px; }
+  #framebtns button { margin-right: 6px; }
+  #framebtns button.on { background: #1d5fa3; color: #fff; border-color: #1d5fa3; }
   #stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; }
-  #stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
-  #overlay { position: absolute; inset: 0; pointer-events: none; cursor: crosshair; }
-  #overlay.drawing { pointer-events: auto; }
+  #frame { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #overlay { position: absolute; inset: 0; cursor: crosshair; }
+  #stagemsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 16px; text-align: center; pointer-events: none; }
   .maskbox { position: absolute; background: rgba(0,0,0,.75); border: 2px solid #e33; box-sizing: border-box; }
-  #drawmode { font-weight: 600; }
-  #drawmode.on { background: #e33; color: #fff; }
   #save { width: 100%; padding: 12px; font-weight: 700; font-size: 15px; }
   #msg { white-space: pre-wrap; color: #b00; margin-top: 8px; }
   #msg.ok { color: #080; }
@@ -30,24 +34,25 @@
 <main>
   <h1>Clip Maker 編集画面</h1>
   <div class="sub" id="clipinfo"></div>
+  <div class="steps">手順: <b>① 範囲を確認</b> → <b>② 隠したい所をプレビュー上でドラッグ</b>（不要ならスキップ）→ <b>③ 字幕・コメントを直す</b> → <b>④ 保存</b></div>
 
   <section>
-    <h2>切り抜き範囲（動画内の絶対秒）</h2>
-    開始 <input id="start_sec" type="number" step="0.001"> 〜 終了 <input id="end_sec" type="number" step="0.001">
-    <span class="note">（無料版の上限 30 秒。字幕・マスクの時刻は開始からの相対秒なので、開始を変えたら見直してね）</span>
+    <h2>① 切り抜き範囲</h2>
+    開始 <input id="start_sec" type="text" class="time"> 〜 終了 <input id="end_sec" type="text" class="time">
+    <b id="lenview"></b>
+    <div class="note">「1:24:09」形式でも「5049」（秒）でも入力できる。無料版の上限 30 秒。</div>
   </section>
 
   <section>
-    <h2>④ 隠す範囲（四角で覆う）</h2>
-    <button id="drawmode">四角を描くモード: OFF</button>
-    <span class="note">ON にしてプレビュー上をドラッグすると四角が増える。OFF に戻すと動画を操作できる。座標は 1920×1080 基準。</span>
-    <div id="stage"><div id="player"></div><div id="overlay"></div></div>
-    <table id="masks"><thead><tr><th>x</th><th>y</th><th>幅</th><th>高さ</th><th>表示開始(相対秒)</th><th>表示終了(空=最後まで)</th><th></th></tr></thead><tbody></tbody></table>
+    <h2>② 隠す範囲 — プレビュー上をドラッグすると黒い四角が置ける（複数可・スパチャ名の隠蔽など）</h2>
+    <div id="framebtns">表示するコマ: </div>
+    <div id="stage"><img id="frame" alt=""><div id="overlay"></div><div id="stagemsg"></div></div>
+    <table id="masks"><thead><tr><th>x</th><th>y</th><th>幅</th><th>高さ</th><th>表示開始(秒)</th><th>表示終了(空=最後まで)</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
   <section>
-    <h2>③ 字幕（切り抜き開始からの相対秒）</h2>
-    <table id="cues"><thead><tr><th>開始</th><th>終了</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
+    <h2>③ 字幕 <span class="note">（時刻は切り抜き開始からの秒）</span></h2>
+    <table id="cues"><thead><tr><th>開始(秒)</th><th>終了(秒)</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
     <button class="row-add" id="addcue">字幕を追加</button>
   </section>
 
@@ -56,7 +61,7 @@
     <table id="comments"><thead><tr><th>投稿者</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
-  <button id="save">⑤ 3 ファイルを保存（この後プロ版 render で焼き付け）</button>
+  <button id="save">④ 3 ファイルを保存（この後プロ版 render で焼き付け）</button>
   <div id="msg"></div>
 </main>
 <script src="common.js"></script>

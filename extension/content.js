@@ -84,6 +84,48 @@ function collectComments() {
   return out;
 }
 
+// ---- 編集画面のプレビュー用コマ画像 ----
+// YouTube 埋め込み iframe は拡張ページ（referer 無し）だとエラー 153 で拒否されるため、
+// 吸い出し時に <video> から実際のコマを canvas で撮って編集画面に渡す（2026-08-26 実機で確認）。
+
+const FRAME_W = 1280;        // プレビュー幅。マスク位置決め用途には十分で storage も軽い
+const SEEK_TIMEOUT_MS = 8000;
+const DECODE_WAIT_MS = 250;  // seeked 後にフレームが描画されるまでの余裕
+
+function seekTo(v, t) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { v.removeEventListener("seeked", on); reject(new Error("プレビュー用のシークがタイムアウトしました")); }, SEEK_TIMEOUT_MS);
+    const on = () => { clearTimeout(timer); v.removeEventListener("seeked", on); setTimeout(resolve, DECODE_WAIT_MS); };
+    v.addEventListener("seeked", on);
+    v.currentTime = t;
+  });
+}
+
+// 開始・中間・終了の 3 コマを {t: 開始からの相対秒, dataUrl} で返す。撮れないときは {error}。
+async function captureFrames(v, start, end) {
+  const origTime = v.currentTime, wasPaused = v.paused;
+  try {
+    if (!v.videoWidth || !v.videoHeight) return { error: "動画がまだ読み込まれていません。少し再生してからもう一度お試しください" };
+    v.pause();
+    const canvas = document.createElement("canvas");
+    canvas.width = FRAME_W;
+    canvas.height = Math.round(FRAME_W * v.videoHeight / v.videoWidth);
+    const ctx = canvas.getContext("2d");
+    const list = [];
+    for (const t of [start, (start + end) / 2, Math.max(start, end - 0.1)]) {
+      await seekTo(v, t);
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      list.push({ t: +(t - start).toFixed(1), dataUrl: canvas.toDataURL("image/jpeg", 0.8) });
+    }
+    return { w: canvas.width, h: canvas.height, list };
+  } catch (e) {
+    return { error: `プレビュー画像を取得できませんでした: ${e && e.message ? e.message : e}` };
+  } finally {
+    v.currentTime = origTime;
+    if (!wasPaused) v.play().catch(() => {});
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type !== "CLIP_CAPTURE") return;
   (async () => {
@@ -96,12 +138,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const pr = playerResponse();
     const title = (pr && pr.videoDetails && pr.videoDetails.title) || document.title;
     const captions = await fetchCaptions(start, end);
+    const frames = msg.withFrames ? await captureFrames(v, start, end) : undefined;
     sendResponse({
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title,
               start_sec: +start.toFixed(3), end_sec: +end.toFixed(3), max_clip_sec: MAX_CLIP_SEC,
               captured_at: new Date().toISOString() },
       captions,
       comments: collectComments(),
+      frames,
     });
   })().catch(e => sendResponse({ error: `取得中にエラー: ${e && e.message ? e.message : e}` }));
   return true;   // async sendResponse

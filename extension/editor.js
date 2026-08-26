@@ -107,24 +107,40 @@ function renderComments() {
   });
 }
 
-// ---- 矩形の描画（ドラッグで追加） ----
+// ---- プレビュー（吸い出し時に撮った実際のコマ 3 枚。iframe 埋め込みは拡張ページだとエラー 153 で拒否される） ----
+function renderFrames() {
+  const f = draft.frames;
+  const img = $("frame"), sm = $("stagemsg"), bar = $("framebtns");
+  if (!f || f.error || !f.list || !f.list.length) {
+    sm.textContent = (f && f.error) ? f.error :
+      "プレビュー画像がありません。YouTube のタブで「吸い出して編集画面を開く」からやり直すと表示されます（四角の指定は座標入力でも可能）。";
+    bar.style.display = "none";
+    return;
+  }
+  const labels = ["開始", "中間", "終了"];
+  f.list.forEach((fr, i) => {
+    const b = document.createElement("button");
+    b.textContent = `${labels[i]} ${fmtTime(draft.clip.start_sec + fr.t)}`;
+    b.addEventListener("click", () => {
+      img.src = fr.dataUrl;
+      bar.querySelectorAll("button").forEach(x => x.classList.remove("on"));
+      b.classList.add("on");
+    });
+    bar.appendChild(b);
+    if (i === 0) { img.src = fr.dataUrl; b.classList.add("on"); }
+  });
+}
+
+// ---- 矩形の描画（プレビュー上をドラッグで追加・常時有効） ----
 function setupDrawing() {
   const ov = $("overlay");
-  const btn = $("drawmode");
-  let on = false, p0 = null, tmp = null;
-  btn.addEventListener("click", () => {
-    on = !on;
-    btn.textContent = `四角を描くモード: ${on ? "ON" : "OFF"}`;
-    btn.classList.toggle("on", on);
-    ov.classList.toggle("drawing", on);
-  });
+  let p0 = null, tmp = null;
   const toVideo = ev => {
     const r = ov.getBoundingClientRect();
     return { x: Math.round((ev.clientX - r.left) / r.width * VIDEO_W),
              y: Math.round((ev.clientY - r.top) / r.height * VIDEO_H) };
   };
   ov.addEventListener("mousedown", ev => {
-    if (!on) return;
     p0 = toVideo(ev);
     tmp = document.createElement("div");
     tmp.className = "maskbox";
@@ -147,7 +163,8 @@ function setupDrawing() {
     const x = Math.min(p0.x, p.x), y = Math.min(p0.y, p.y);
     const w = Math.abs(p.x - p0.x), h = Math.abs(p.y - p0.y);
     tmp.remove(); tmp = null; p0 = null;
-    if (w < 4 || h < 4) { showError("四角が小さすぎます（クリックではなくドラッグで範囲を描いてください）"); return; }
+    if (w < 2 && h < 2) return;   // ただのクリックは何もしない（エラーを出すと煩い）
+    if (w < 4 || h < 4) { showError("四角が小さすぎます（もう少し大きくドラッグしてください）"); return; }
     draft.clip.masks.push({ x, y, w, h, start: 0, end: null });
     showOk("");
     renderMasks();
@@ -156,10 +173,12 @@ function setupDrawing() {
 
 // ---- 保存（検証してから 3 ファイル） ----
 function validate() {
-  const start = Number($("start_sec").value), end = Number($("end_sec").value);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return "開始・終了が数値ではありません";
-  if (end <= start) return `終了(${end}) は開始(${start}) より後にしてください`;
-  if (end - start > MAX_CLIP_SEC) return `長さ ${(end - start).toFixed(1)}s が無料版の上限 ${MAX_CLIP_SEC}s を超えています`;
+  const start = parseTimeStr($("start_sec").value), end = parseTimeStr($("end_sec").value);
+  if (start === null || start === undefined || end === null || end === undefined) {
+    return "開始・終了は「1:24:09」か「5049」（秒）の形式で入れてください";
+  }
+  if (end <= start) return `終了(${fmtTime(end)}) は開始(${fmtTime(start)}) より後にしてください`;
+  if (end - start > MAX_CLIP_SEC) return `長さ ${(end - start).toFixed(1)} 秒が無料版の上限 ${MAX_CLIP_SEC} 秒を超えています`;
   draft.clip.start_sec = start; draft.clip.end_sec = end;
   for (let i = 0; i < draft.captions.cues.length; i++) {
     const c = draft.captions.cues[i];
@@ -187,12 +206,16 @@ async function init() {
   draft = d;
   $("clipinfo").textContent = `${d.clip.title}（${d.clip.video_id}）` +
     (d.captions.error ? ` — 字幕: ${d.captions.error}` : ` — 字幕 ${d.captions.cues.length} 行 / コメント ${d.comments.length} 件`);
-  $("start_sec").value = d.clip.start_sec;
-  $("end_sec").value = d.clip.end_sec;
-  const iframe = document.createElement("iframe");
-  iframe.src = `https://www.youtube-nocookie.com/embed/${d.clip.video_id}?start=${Math.floor(d.clip.start_sec)}`;
-  iframe.allow = "encrypted-media; picture-in-picture";
-  $("stage").insertBefore(iframe, $("overlay"));
+  $("start_sec").value = fmtTime(d.clip.start_sec);
+  $("end_sec").value = fmtTime(d.clip.end_sec);
+  const updateLen = () => {
+    const s = parseTimeStr($("start_sec").value), e = parseTimeStr($("end_sec").value);
+    $("lenview").textContent = (Number.isFinite(s) && Number.isFinite(e) && e > s) ? `（長さ ${(e - s).toFixed(1)} 秒）` : "";
+  };
+  updateLen();
+  $("start_sec").addEventListener("input", updateLen);
+  $("end_sec").addEventListener("input", updateLen);
+  renderFrames();
   renderMasks(); renderCues(); renderComments(); setupDrawing();
 
   $("addcue").addEventListener("click", () => {

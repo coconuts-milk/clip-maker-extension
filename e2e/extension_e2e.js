@@ -69,15 +69,22 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     const editor = await edTarget.page();
     await editor.bringToFront();
     await editor.waitForSelector("#overlay", { timeout: 10000 });
-    await new Promise(r => setTimeout(r, 1500));   // draft 読込と描画待ち
-    // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当）
-    await editor.click("#drawmode");
+    // プレビュー（実際のコマ画像）が読み込まれるまで待つ（iframe 埋め込みはエラー 153 で使えないため画像方式）
+    await editor.waitForFunction(() => {
+      const i = document.getElementById("frame");
+      return i && i.naturalWidth > 0;
+    }, { timeout: 20000 });
+    const frameBtns = await editor.evaluate(() => document.querySelectorAll("#framebtns button").length);
+    const startDisp = await editor.evaluate(() => document.getElementById("start_sec").value);
+    console.log("frame buttons:", frameBtns, "/ start display:", startDisp);
+    // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当・描画モード切替は廃止＝常時ドラッグ可）
     const box = await (await editor.$("#overlay")).boundingBox();
     await editor.mouse.move(box.x + box.width * 0.70, box.y + box.height * 0.05);
     await editor.mouse.down();
     await editor.mouse.move(box.x + box.width * 0.95, box.y + box.height * 0.17, { steps: 5 });
     await editor.mouse.up();
     const maskRows = await editor.evaluate(() => document.querySelectorAll("#masks tbody tr").length);
+    await editor.screenshot({ path: path.join(__dirname, "editor_screenshot.png"), fullPage: true });   // 見た目確認用
     await editor.click("#save");
     const files = await editor.evaluate(async (before) => {
       for (let i = 0; i < 50; i++) {
@@ -103,7 +110,10 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       console.log("srt head:", fs.readFileSync(saved.find(f => f.endsWith(".srt")), "utf8").split(String.fromCharCode(10)).slice(0, 4).map(l => l.trim()).join(" | "));
     }
     console.log("mask rows in editor:", maskRows);
-    console.log(ok && dlOk && maskOk && maskRows === 1 ? "E2E_OK" : "E2E_FAILED");
-    process.exitCode = ok && dlOk && maskOk && maskRows === 1 ? 0 : 1;
+    // frameOk: コマ 3 枚のボタンが出て、開始時刻が「1:24:09」形式（コロン入り）で表示されている
+    const frameOk = frameBtns === 3 && /:/.test(startDisp);
+    const pass = ok && dlOk && maskOk && maskRows === 1 && frameOk;
+    console.log(pass ? "E2E_OK" : "E2E_FAILED");
+    process.exitCode = pass ? 0 : 1;
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

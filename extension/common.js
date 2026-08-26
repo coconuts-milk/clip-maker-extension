@@ -2,6 +2,24 @@
 
 const MAX_CLIP_SEC = 30;   // 無料版の上限（仕様: 30 秒上限）
 
+// "5049" / "5049.5" / "1:24:09" / "24:09" を秒に変換。不正なら null、空なら undefined。
+function parseTimeStr(raw) {
+  const s = String(raw).trim();
+  if (s === "") return undefined;
+  if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
+  const m = s.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/);
+  if (!m) return null;
+  return (Number(m[1] || 0)) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+// 秒 → "1:24:09" / "0:05" 表示（0.1 秒単位で端数があるときだけ小数を付ける）
+function fmtTime(sec) {
+  const t = Math.round(sec * 10) / 10;
+  const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), r = +(t - h * 3600 - m * 60).toFixed(1);
+  const rs = (r < 10 ? "0" : "") + (Number.isInteger(r) ? String(r) : r.toFixed(1));
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m)) + ":" + rs;
+}
+
 function srtTime(sec) {
   const ms = Math.round(sec * 1000);
   const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000),
