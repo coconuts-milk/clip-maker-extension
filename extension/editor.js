@@ -197,6 +197,7 @@ function validate() {
 }
 
 async function init() {
+  $("edver").textContent = "v" + chrome.runtime.getManifest().version;
   const { draft: d } = await chrome.storage.local.get("draft");
   if (!d) {
     showError("編集データがありません。YouTube のタブで「吸い出して編集画面を開く」からやり直してください。");

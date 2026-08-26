@@ -17,16 +17,24 @@ async function capture(withFrames) {
   let r;
   try { r = await chrome.tabs.sendMessage(tab.id, req); }
   catch (e) {
-    // 拡張を入れる前から開いていたタブには content script が入っていない → その場で注入して 1 回だけ再試行
+    // 拡張を入れる前から開いていたタブ／拡張リロード直後のタブには生きた content script が無い
+    // → その場で注入して 1 回だけ再試行（content.js は common.js に依存するので必ずセットで入れる）
     try {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["inject.js"], world: "MAIN" });
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["common.js", "content.js"] });
       r = await chrome.tabs.sendMessage(tab.id, req);
     } catch (e2) { throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度押してください。"; }
   }
   if (!r || r.error) throw (r && r.error) || "取得に失敗しました";
+  if (r.ver !== chrome.runtime.getManifest().version) {
+    // 「パッケージ化されていない拡張」はファイルを差し替えても🔄を押すまで YouTube タブ側が旧版のまま動く
+    throw `旧バージョンの部品が動いています（ページ側 ${r.ver || "0.2 以前"} / 本体 ${chrome.runtime.getManifest().version}）。\n` +
+          "chrome://extensions を開いて Clip Maker の更新（🔄）ボタンを押してから、もう一度このボタンを押してください（YouTube タブの再読み込みは不要）。";
+  }
   return r;
 }
+
+document.getElementById("ver").textContent = "v" + chrome.runtime.getManifest().version;
 
 document.getElementById("go").addEventListener("click", async () => {
   const msg = document.getElementById("msg");

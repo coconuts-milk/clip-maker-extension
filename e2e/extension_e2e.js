@@ -96,7 +96,12 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     }, before);
     console.log("editor msg:", await editor.evaluate(() => document.getElementById("msg").textContent));
     const fs = require("fs");
-    const saved = files.filter(f => fs.existsSync(f) && fs.statSync(f).size > 0);
+    // downloads.search が complete を返してもディスクへの書き出しが一瞬遅れることがある（実測でフレーキー）→ リトライ
+    let saved = [];
+    for (let i = 0; i < 20 && saved.length < 3; i++) {
+      saved = files.filter(f => fs.existsSync(f) && fs.statSync(f).size > 0);
+      if (saved.length < 3) await new Promise(r => setTimeout(r, 300));
+    }
     console.log("downloaded:", saved);
     // 同名ファイルが既にあると Chrome が「name (1).ext」にリネームするので endsWith では判定しない
     const dlOk = saved.some(f => /\.clip[^\\]*\.json$/.test(f)) && saved.some(f => /\.srt$/.test(f)) && saved.some(f => /\.comments[^\\]*\.json$/.test(f));

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Clip Maker (Free)",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "YouTube から切り抜き範囲・コメント・字幕を吸い出し、編集画面で修正・矩形マスク指定して保存する（無料版・最大 30 秒）",
   "permissions": [
     "downloads",

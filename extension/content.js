@@ -140,6 +140,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const captions = await fetchCaptions(start, end);
     const frames = msg.withFrames ? await captureFrames(v, start, end) : undefined;
     sendResponse({
+      ver: chrome.runtime.getManifest().version,   // popup 側で新旧不一致（🔄忘れ）を検出するため
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title,
               start_sec: +start.toFixed(3), end_sec: +end.toFixed(3), max_clip_sec: MAX_CLIP_SEC,
               captured_at: new Date().toISOString() },
