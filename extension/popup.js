@@ -1,6 +1,6 @@
 // 2 段階フロー（2026-08-26 エイジ指示）:
-//   ① popup で指定時間のコメントと字幕を吸い出す → ② 別タブに編集画面（editor.html）を出す
-//   → ③ 字幕・コメントを修正 → ④ 隠す範囲を四角で覆う → ⑤ 3 ファイル保存 → プロ版 render で焼き付け。
+//   ① popup で指定時間のチャット（配信アーカイブのチャットリプレイ）と字幕を吸い出す → ② 別タブに編集画面（editor.html）を出す
+//   → ③ 字幕・チャットを修正 → ④ 隠す範囲を四角で覆う → ⑤ 3 ファイル保存 → プロ版 watch/render で焼き付け。
 // 「編集せずそのまま保存」も残す（取得時間と字幕は別ファイルで編集可能、の元仕様）。
 
 // ページから吸い出す。失敗はメッセージ文字列を throw（呼び側で表示）。
@@ -42,7 +42,7 @@ document.getElementById("go").addEventListener("click", async () => {
   let r;
   try { r = await capture(true); } catch (e) { msg.textContent = String(e); return; }
   // 編集画面はタブを開き直しても続きから編集できるよう storage 経由で渡す
-  await chrome.storage.local.set({ draft: { clip: { ...r.clip, masks: [] }, captions: r.captions, comments: r.comments, frames: r.frames } });
+  await chrome.storage.local.set({ draft: { clip: { ...r.clip, masks: [] }, captions: r.captions, chat: r.chat, frames: r.frames } });
   await chrome.tabs.create({ url: chrome.runtime.getURL("editor.html") });
 });
 
@@ -51,9 +51,10 @@ document.getElementById("savedirect").addEventListener("click", async () => {
   msg.textContent = "取得中…"; msg.id = "msg";
   let r;
   try { r = await capture(false); } catch (e) { msg.textContent = String(e); return; }
-  const base = await saveClipFiles(r.clip, r.captions.cues, r.comments);
-  const warn = r.captions.error ? `\n字幕: ${r.captions.error}` : `\n字幕: ${r.captions.cues.length} 行（${r.captions.lang}）`;
+  const base = await saveClipFiles(r.clip, r.captions.cues, r.chat.messages);
+  const warn = (r.captions.error ? `\n字幕: ${r.captions.error}` : `\n字幕: ${r.captions.cues.length} 行（${r.captions.lang}）`) +
+               (r.chat.error ? `\nチャット: ${r.chat.error}` : "");
   msg.id = "ok";
-  msg.textContent = `保存しました: ${fmtTime(r.clip.start_sec)} 〜 ${fmtTime(r.clip.end_sec)}${warn}\nコメント: ${r.comments.length} 件（表示済み分のみ）\n` +
-                    `ダウンロード/clip-maker/${base}.*`;
+  msg.textContent = `保存しました: ${fmtTime(r.clip.start_sec)} 〜 ${fmtTime(r.clip.end_sec)}${warn}\nチャット: ${r.chat.messages.length} 件\n` +
+                    `ダウンロード/clip-maker/${base}.* → 自動焼き付けが動いていれば約1分で ${base}.mp4 が出ます`;
 });

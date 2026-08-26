@@ -36,11 +36,11 @@ function download(name, text, mime) {
   return chrome.downloads.download({ url, filename: "clip-maker/" + name, saveAs: false });
 }
 
-// 3 ファイル保存（clip.json / srt / comments.json）。呼び側で draft の検証を済ませてから呼ぶ。
-async function saveClipFiles(clip, cues, comments) {
+// 3 ファイル保存（clip.json / srt / chat.json）。呼び側で draft の検証を済ませてから呼ぶ。
+async function saveClipFiles(clip, cues, chat) {
   const base = `${clip.video_id}_${Math.floor(clip.start_sec)}`;
   await download(`${base}.clip.json`, JSON.stringify(clip, null, 2), "application/json");
   await download(`${base}.srt`, toSrt(cues), "application/x-subrip");   // text/plain だと Chrome が .txt に改名する（E2E で実測）
-  await download(`${base}.comments.json`, JSON.stringify(comments, null, 2), "application/json");
+  await download(`${base}.chat.json`, JSON.stringify(chat, null, 2), "application/json");
   return base;
 }

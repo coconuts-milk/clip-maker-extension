@@ -34,7 +34,7 @@
 <main>
   <h1>Clip Maker 編集画面 <span id="edver" class="note"></span></h1>
   <div class="sub" id="clipinfo"></div>
-  <div class="steps">手順: <b>① 範囲を確認</b> → <b>② 隠したい所をプレビュー上でドラッグ</b>（不要ならスキップ）→ <b>③ 字幕・コメントを直す</b> → <b>④ 保存</b></div>
+  <div class="steps">手順: <b>① 範囲を確認</b> → <b>② 隠したい所をプレビュー上でドラッグ</b>（不要ならスキップ）→ <b>③ 字幕・チャットを直す</b> → <b>④ 保存</b></div>
 
   <section>
     <h2>① 切り抜き範囲</h2>
@@ -57,8 +57,8 @@
   </section>
 
   <section>
-    <h2>③ コメント</h2>
-    <table id="comments"><thead><tr><th>投稿者</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
+    <h2>③ チャット <span class="note">（配信アーカイブのチャット欄。時刻は切り抜き開始からの秒。スパチャは投稿者名に金額付き）</span></h2>
+    <table id="chat"><thead><tr><th>時刻</th><th>投稿者</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
   </section>
 
   <button id="save">④ 3 ファイルを保存（この後プロ版 render で焼き付け）</button>

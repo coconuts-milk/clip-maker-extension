@@ -5,12 +5,17 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 PRO_MAX_CLIP_SEC = 600      # プロ版の上限。無料版の 30 秒に対し 10 分（ffmpeg の処理時間と YouTube 規約上の常識的範囲）
 SECTION_PAD_SEC = 5.0       # 区間ダウンロードの前後余白。--force-keyframes-at-cuts の切断誤差を吸収する
 SRT_TIME_PAT = re.compile(r"^(\d{2}):(\d{2}):(\d{2}),(\d{3}) --> (\d{2}):(\d{2}):(\d{2}),(\d{3})\s*$")
+# Chrome は同名ファイルを「name.clip (1).json」にリネームする。srt / mp4 も同じ連番で対応づける
+CLIP_JSON_PAT = re.compile(r"^(?P<stem>.+)\.clip(?P<dup> \(\d+\))?\.json$")
+WATCH_STABLE_SEC = 1.5      # 保存直後の書きかけファイルを掴まないための猶予（Chrome の .crdownload → リネーム対策）
+WATCH_INTERVAL_SEC = 2.0    # 監視の巡回間隔。保存操作の粒度（数秒〜）に対して十分速く、CPU 負荷は無視できる
 
 
 @dataclass
@@ -197,9 +202,16 @@ def render(clip_json: str, srt: Optional[str], out_dir: str, run: Callable = sub
         - 全編ソースが無いときは区間ダウンロードになり -ss が区間相対に補正される
     """
     spec = load_clip(clip_json)
-    if srt:
-        validate_srt(srt)
+    out_dir = os.path.abspath(out_dir)   # ffmpeg を cwd=out_dir で起動するため、相対 --out でも src/out が迷子にならないようにする
     os.makedirs(out_dir, exist_ok=True)
+    if srt and validate_srt(srt) == 0:
+        srt = None   # 字幕 0 件（区間に字幕が無い動画）は焼くものが無い＝字幕なしで焼く。libass は空 srt を開けず落ちる（2026-08 実測）
+    if srt:
+        # パス中の空白・記号で subtitles フィルタのエスケープ事故を起こさないよう、
+        # 安全な名前で out_dir にコピーし cwd=out_dir の相対名で渡す
+        safe = os.path.join(out_dir, f"{spec.video_id}_{int(spec.start_sec)}_{int(spec.end_sec)}.burn.srt")
+        shutil.copyfile(srt, safe)
+        srt = os.path.basename(safe)
     full = os.path.join(out_dir, f"{spec.video_id}.source.mp4")
     if os.path.exists(full):
         src, offset = full, 0.0
@@ -208,7 +220,96 @@ def render(clip_json: str, srt: Optional[str], out_dir: str, run: Callable = sub
         offset = max(0.0, spec.start_sec - SECTION_PAD_SEC)
     # 同じ開始秒で長さ違いの切り抜きを上書きしないよう end も名前に入れる
     out = os.path.join(out_dir, f"{spec.video_id}_{int(spec.start_sec)}_{int(spec.end_sec)}.mp4")
-    r = run(ffmpeg_args(src, spec, srt, out, src_offset=offset), capture_output=True, text=True)
+    # cwd=out_dir: subtitles フィルタに相対名を渡すため（src / out は絶対パスなので影響なし）
+    r = run(ffmpeg_args(src, spec, srt, out, src_offset=offset), capture_output=True, text=True, cwd=out_dir)
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg 失敗 ({r.returncode}): {r.stderr.strip()[-500:]}")
     return out
+
+
+# ---- フォルダ監視（拡張の「保存」だけで mp4 まで出す自動焼き付け） ----
+
+def watch_targets(watch_dir: str, now: Optional[float] = None) -> List[tuple]:
+    """watch_dir 直下で焼き付けが必要な clip.json を探す。
+
+    返り値: (clip_json, srt または None, 出力 mp4, エラーファイル) のリスト。
+    スキップ条件: 書き込み後 WATCH_STABLE_SEC 未満（書きかけ）／json より新しい mp4 が
+    既にある（処理済み）／json より新しいエラーファイルがある（失敗済み。json を
+    保存し直すと mtime が進んで再挑戦になる）。
+
+    Tests:
+        - 未処理の clip.json が srt とペアで返る
+        - Chrome の「name.clip (1).json」も同じ連番の srt / mp4 に対応づく
+        - 処理済み（新しい mp4 あり）と書きかけ（mtime が新しすぎる）は返らない
+        - 失敗済み（新しいエラーファイルあり）は返らない
+    """
+    now = time.time() if now is None else now
+    targets = []
+    for name in sorted(os.listdir(watch_dir)):
+        m = CLIP_JSON_PAT.match(name)
+        if not m:
+            continue
+        clip_json = os.path.join(watch_dir, name)
+        mtime = os.stat(clip_json).st_mtime
+        if now - mtime < WATCH_STABLE_SEC:
+            continue
+        base = m.group("stem") + (m.group("dup") or "")
+        out = os.path.join(watch_dir, base + ".mp4")
+        err = os.path.join(watch_dir, base + ".render_error.txt")
+        if os.path.exists(out) and os.stat(out).st_mtime >= mtime:
+            continue
+        if os.path.exists(err) and os.stat(err).st_mtime >= mtime:
+            continue
+        srt = os.path.join(watch_dir, base + ".srt")
+        targets.append((clip_json, srt if os.path.exists(srt) else None, out, err))
+    return targets
+
+
+def watch_once(watch_dir: str, cache_dir: str, run: Callable = subprocess.run,
+               do_render: Optional[Callable] = None) -> List[str]:
+    """未処理の clip.json を全部焼き付ける。返り値は出来上がった mp4 のリスト。
+
+    失敗は握りつぶさず、ユーザーが見る保存フォルダに <base>.render_error.txt を
+    書いて次へ進む（監視自体は止めない。原因と再実行方法をファイルに明記する）。
+
+    Tests:
+        - render 成功で mp4 が watch_dir に置かれ、古いエラーファイルは消える
+        - render 失敗でエラーファイルが書かれ、他の json の処理は続く
+    """
+    do_render = render if do_render is None else do_render
+    done = []
+    for clip_json, srt, out, err in watch_targets(watch_dir):
+        print(f"焼き付け開始: {os.path.basename(clip_json)}", flush=True)
+        try:
+            tmp = do_render(clip_json, srt, cache_dir, run=run)
+            os.replace(tmp, out)
+            if os.path.exists(err):
+                os.remove(err)
+            done.append(out)
+            print(f"焼き付け完了: {out}", flush=True)
+        except (ValueError, RuntimeError) as e:
+            with open(err, "w", encoding="utf-8") as f:
+                f.write(f"{os.path.basename(clip_json)} の焼き付けに失敗しました:\n{e}\n\n"
+                        f"内容を直して {os.path.basename(clip_json)} を保存し直すと自動で再実行されます。\n")
+            print(f"エラー: {e} → {os.path.basename(err)}", file=sys.stderr, flush=True)
+    return done
+
+
+def watch(watch_dir: str, cache_dir: Optional[str] = None,
+          interval: float = WATCH_INTERVAL_SEC, once: bool = False,
+          run: Callable = subprocess.run) -> None:
+    """watch_dir を監視し、拡張が保存した clip.json を自動で mp4 に焼き付け続ける。
+
+    once=True は未処理分だけ処理して戻る（テスト・手動一括用）。
+    元動画のキャッシュ（.section.mp4 / .source.mp4）は cache_dir（既定 watch_dir/.cache）に
+    残し、ユーザーが見るフォルダには mp4 と3ファイルだけを置く。
+    """
+    os.makedirs(watch_dir, exist_ok=True)
+    cache_dir = cache_dir or os.path.join(watch_dir, ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    print(f"監視中: {watch_dir}\n拡張の「保存」だけで、このフォルダに自動で mp4 が出ます（終了は Ctrl+C）", flush=True)
+    while True:
+        watch_once(watch_dir, cache_dir, run=run)
+        if once:
+            return
+        time.sleep(interval)

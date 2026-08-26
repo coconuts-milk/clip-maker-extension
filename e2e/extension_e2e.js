@@ -1,5 +1,5 @@
 // 拡張の実機 E2E: 本物の Chrome に拡張を読み込み、YouTube 動画ページで content.js に
-// CLIP_CAPTURE を送り、clip / captions / comments が実データで返ることを確認する。
+// CLIP_CAPTURE を送り、clip / captions / chat（チャットリプレイ）が実データで返ることを確認する。
 // さらに 2 段階フロー本線（popup → 編集画面タブ → マスクをドラッグ描画 → 3 ファイル保存）を通す。
 // 使い方: node e2e/extension_e2e.js [videoId] [start秒] [length秒]
 const puppeteer = require("puppeteer-core");
@@ -29,33 +29,37 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     }
     await page.evaluate(() => { const v = document.querySelector("video"); v.muted = true; return v.play().catch(() => {}); });
     await new Promise(r => setTimeout(r, 4000));
-    // コメント欄を読み込ませる。配信アーカイブはコメント欄が深いので出るまで繰り返しスクロールする
-    let hasComments = false;
-    for (let i = 0; i < 20 && !hasComments; i++) {
-      await page.evaluate(() => window.scrollBy(0, 1500));
-      await new Promise(r => setTimeout(r, 1500));
-      hasComments = await page.$("ytd-comment-view-model, ytd-comment-renderer") !== null;
-    }
-    if (!hasComments) console.log("WARN: コメントが読み込まれなかった（コメント無効の可能性）");
-    await page.evaluate(() => window.scrollTo(0, 0));   // プレーヤーを画面に戻す（字幕取得のため）
+    // チャットリプレイは content.js（collectChat）が自前で開いて同期待ちするのでページ側の仕込みは不要。
+    // 字幕はプレーヤー初期化直後だと CC ON でも timedtext を取りに行かないことがある（実測フレーキー）
+    // → 先にページ側で CC を入れて取得を済ませておく
+    await page.evaluate(() => { const b = document.querySelector(".ytp-subtitles-button"); if (b && b.getAttribute("aria-pressed") !== "true") b.click(); });
+    await new Promise(r => setTimeout(r, 5000));
 
     // popup と同じ経路（拡張側 → chrome.tabs.sendMessage → content.js）を service worker から叩く
     const extTarget = await browser.waitForTarget(t => t.url().startsWith("chrome-extension://"), { timeout: 15000 });
     const extId = new URL(extTarget.url()).host;
     const popup = await browser.newPage();
     await popup.goto(`chrome-extension://${extId}/popup.html`);
-    const result = await popup.evaluate(async (videoId, start, len) => {
-      const tabs = await chrome.tabs.query({ url: "*://www.youtube.com/*" });
-      const tab = tabs.find(t => t.url.includes(videoId));
-      if (!tab) return { error: "YouTube タブが見つからない" };
-      return chrome.tabs.sendMessage(tab.id, { type: "CLIP_CAPTURE", start, length: len });
-    }, VIDEO, START, LEN);
+    // 字幕は本物のユーザーも「CC を押してもう一度」で回復する運用（popup の案内文どおり）→ E2E も同じく数回やり直す
+    let result;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      result = await popup.evaluate(async (videoId, start, len) => {
+        const tabs = await chrome.tabs.query({ url: "*://www.youtube.com/*" });
+        const tab = tabs.find(t => t.url.includes(videoId));
+        if (!tab) return { error: "YouTube タブが見つからない" };
+        return chrome.tabs.sendMessage(tab.id, { type: "CLIP_CAPTURE", start, length: len });
+      }, VIDEO, START, LEN);
+      if (result && result.captions && result.captions.cues && result.captions.cues.length > 0) break;
+      console.log(`captions empty (attempt ${attempt}): ${result && result.captions ? result.captions.error || "" : "no result"}`);
+      await new Promise(r => setTimeout(r, 4000));
+    }
     console.log(JSON.stringify(result, null, 1).slice(0, 1500));
-    // 合格条件: 区間が 30 秒以内・字幕 1 件以上（実データ）・コメント 1 件以上（実データ）
+    // 合格条件: 区間が 30 秒以内・字幕 1 件以上（実データ）・チャット 1 件以上（実データ・チャットリプレイ）
     const ok = result && result.clip && result.clip.video_id === VIDEO &&
                result.clip.end_sec - result.clip.start_sec <= result.clip.max_clip_sec &&
                result.captions && result.captions.cues && result.captions.cues.length > 0 &&
-               Array.isArray(result.comments) && result.comments.length > 0;
+               result.chat && Array.isArray(result.chat.messages) && result.chat.messages.length > 0;
+    if (result && result.chat && result.chat.error) console.log("chat error:", result.chat.error);
     // 2 段階フロー本線: popup「吸い出して編集画面を開く」→ 編集タブでマスクをドラッグ描画 → 保存 → 3 ファイル
     // 保存先は本物と同じ「ダウンロード/clip-maker/」。CDP で downloadPath を上書きすると名前が download.json に潰れるので触らない
     const before = await popup.evaluate(async () => (await chrome.downloads.search({ state: "complete" })).length);
@@ -104,7 +108,7 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     }
     console.log("downloaded:", saved);
     // 同名ファイルが既にあると Chrome が「name (1).ext」にリネームするので endsWith では判定しない
-    const dlOk = saved.some(f => /\.clip[^\\]*\.json$/.test(f)) && saved.some(f => /\.srt$/.test(f)) && saved.some(f => /\.comments[^\\]*\.json$/.test(f));
+    const dlOk = saved.some(f => /\.clip[^\\]*\.json$/.test(f)) && saved.some(f => /\.srt$/.test(f)) && saved.some(f => /\.chat[^\\]*\.json$/.test(f));
     let maskOk = false;
     if (dlOk) {
       // 最新の clip.json にドラッグしたマスクが入っているか

@@ -1,4 +1,4 @@
-// Clip Maker content script — YouTube 再生ページから「現在位置・字幕・表示中コメント」を取る。
+// Clip Maker content script — YouTube 再生ページから「現在位置・字幕・チャット欄（リプレイ）」を取る。
 // 設計原則: 取れないものは空で誤魔化さず error を返す（呼び側で表示する）。
 // MAX_CLIP_SEC は common.js（manifest で先に読み込まれる）で定義。
 
@@ -56,6 +56,15 @@ async function fetchCaptions(start, end) {
   if (!tracks || !tracks.length) return { error: "この動画には字幕トラックがありません", cues: [] };
   // 拡張から timedtext を直接 fetch すると pot トークン無しで空が返るため、プレーヤーの通信を使う。
   if (!capturedIsForCurrentVideo()) { capturedCaptions = null; ensureCaptionsOn(); await waitCaptured(); }
+  if (!capturedIsForCurrentVideo()) {
+    // プレーヤー初期化直後は CC が ON でも timedtext を取りに行かないことがある（2026-08 実測）
+    // → 一度 OFF→ON にトグルして取得し直させる
+    const btn = document.querySelector(".ytp-subtitles-button");
+    if (btn) {
+      btn.click(); await new Promise(r => setTimeout(r, 300)); btn.click();
+      await waitCaptured();
+    }
+  }
   if (!capturedIsForCurrentVideo()) return { error: "字幕を取得できませんでした。プレーヤーの CC ボタンを押してからもう一度お試しください", cues: [] };
   const lang = new URL(capturedCaptions.url, location.href).searchParams.get("lang") || "";
   let j;
@@ -72,16 +81,85 @@ async function fetchCaptions(start, end) {
   return { lang, cues };
 }
 
-function collectComments() {
-  // 表示済みコメントだけ（YouTube Data API キー不要）。未スクロール分は取れないので件数を返す。
+// ---- チャット欄（配信アーカイブのチャットリプレイ。動画下のコメント欄ではない） ----
+// チャット iframe（/live_chat_replay）は同一オリジンなので contentDocument を直接読める。
+// リプレイはプレーヤーの再生位置に同期するので、切り抜き終了時刻へシークしてから拾う。
+
+const CHAT_SYNC_TIMEOUT_MS = 12000;  // シーク後にチャットリプレイが追いつくまでの待ち上限
+const CHAT_POLL_MS = 500;            // 同期待ちの巡回間隔
+const CHAT_STABLE_POLLS = 2;         // 件数がこの回数連続で変わらなければ読み込み完了とみなす
+
+function chatDoc() {
+  const f = document.querySelector("iframe#chatframe");
+  try { return f ? f.contentDocument : null; } catch (_) { return null; }
+}
+
+async function ensureChatOpen() {
+  if (chatDoc()) return true;
+  // 「チャットのリプレイを表示」が閉じていたら開く
+  const btn = document.querySelector("#show-hide-button button");
+  if (!btn) return false;
+  btn.click();
+  const t0 = Date.now();
+  while (Date.now() - t0 < CHAT_SYNC_TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, CHAT_POLL_MS));
+    if (chatDoc()) return true;
+  }
+  return false;
+}
+
+function chatTs(s) {
+  // チャットの時刻表示は動画内時刻（"1:24:10"）。配信開始前は "-0:05" 形式
+  if (!s) return null;
+  const neg = s.startsWith("-");
+  const sec = parseTimeStr(neg ? s.slice(1) : s);   // common.js
+  return (sec === null || sec === undefined) ? null : (neg ? -sec : sec);
+}
+
+function readChatMessages(d) {
   const out = [];
-  document.querySelectorAll("ytd-comment-view-model, ytd-comment-renderer").forEach(el => {
-    const author = el.querySelector("#author-text")?.textContent.trim();
-    const text = el.querySelector("#content-text")?.textContent.trim();
-    const likes = el.querySelector("#vote-count-middle")?.textContent.trim() || "0";
-    if (text) out.push({ author, text, likes });
+  d.querySelectorAll("yt-live-chat-text-message-renderer, yt-live-chat-paid-message-renderer, yt-live-chat-membership-item-renderer").forEach(el => {
+    const t = chatTs(el.querySelector("#timestamp")?.textContent.trim());
+    if (t === null) return;
+    const author = el.querySelector("#author-name")?.textContent.trim() || "";
+    const text = el.querySelector("#message")?.textContent.trim() || "";
+    const amount = el.querySelector("#purchase-amount")?.textContent.trim();
+    const tag = el.tagName.toLowerCase();
+    const type = tag.includes("paid") ? "superchat" : tag.includes("membership") ? "membership" : "chat";
+    if (text || amount) out.push({ t, author, text, ...(amount ? { amount } : {}), ...(type !== "chat" ? { type } : {}) });
   });
   return out;
+}
+
+// 切り抜き区間 [start, end] のチャットを {t: 切り抜き開始からの秒, author, text, ...} で返す。
+// 取れないときは明示 error（コメント欄で代用したり空で誤魔化したりしない）。
+async function collectChat(v, start, end) {
+  if (!(await ensureChatOpen())) {
+    return { error: "チャット欄が見つかりません（チャットリプレイの無い動画では取れません）", messages: [] };
+  }
+  const origTime = v.currentTime, wasPaused = v.paused;
+  try {
+    v.pause();
+    await seekTo(v, Math.max(start, end - 0.1));   // リプレイを区間終端まで進める（履歴に区間全体が残る）
+    let prev = -1, stable = 0, msgs = [];
+    const t0 = Date.now();
+    while (Date.now() - t0 < CHAT_SYNC_TIMEOUT_MS && stable < CHAT_STABLE_POLLS) {
+      await new Promise(r => setTimeout(r, CHAT_POLL_MS));
+      const d = chatDoc();
+      msgs = d ? readChatMessages(d) : [];
+      stable = msgs.length === prev && msgs.length > 0 ? stable + 1 : 0;
+      prev = msgs.length;
+    }
+    if (!msgs.length) {
+      return { error: "チャットを読み込めませんでした（チャットリプレイが表示されているか確認してください）", messages: [] };
+    }
+    const s0 = Math.floor(start);   // チャットの時刻表示は秒単位なので秒に丸めて範囲判定
+    const inRange = msgs.filter(m => m.t >= s0 && m.t <= Math.ceil(end));
+    return { messages: inRange.map(m => ({ ...m, t: m.t - s0 })) };
+  } finally {
+    v.currentTime = origTime;
+    if (!wasPaused) v.play().catch(() => {});
+  }
 }
 
 // ---- 編集画面のプレビュー用コマ画像 ----
@@ -139,13 +217,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const title = (pr && pr.videoDetails && pr.videoDetails.title) || document.title;
     const captions = await fetchCaptions(start, end);
     const frames = msg.withFrames ? await captureFrames(v, start, end) : undefined;
+    const chat = await collectChat(v, start, end);
     sendResponse({
       ver: chrome.runtime.getManifest().version,   // popup 側で新旧不一致（🔄忘れ）を検出するため
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title,
               start_sec: +start.toFixed(3), end_sec: +end.toFixed(3), max_clip_sec: MAX_CLIP_SEC,
               captured_at: new Date().toISOString() },
       captions,
-      comments: collectComments(),
+      chat,
       frames,
     });
   })().catch(e => sendResponse({ error: `取得中にエラー: ${e && e.message ? e.message : e}` }));

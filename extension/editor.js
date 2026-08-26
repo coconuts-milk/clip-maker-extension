@@ -1,5 +1,5 @@
 // 編集画面（2 段階フローの ②③④⑤）。popup が storage に置いた draft を読み、
-// 字幕・コメントの修正と矩形マスクの指定をして 3 ファイルに保存する。
+// 字幕・チャット（配信アーカイブのチャットリプレイ）の修正と矩形マスクの指定をして 3 ファイルに保存する。
 // マスク座標は 1920×1080 基準（プロ版 render は height<=1080 で取得するため）。
 
 const VIDEO_W = 1920, VIDEO_H = 1080;   // マスク座標の基準解像度
@@ -83,13 +83,17 @@ function renderCues() {
   });
 }
 
-function renderComments() {
-  const tb = $("comments").querySelector("tbody");
+function renderChat() {
+  const tb = $("chat").querySelector("tbody");
   tb.textContent = "";
-  draft.comments.forEach((c, i) => {
+  draft.chat.messages.forEach((c, i) => {
     const tr = document.createElement("tr");
+    const tdTime = document.createElement("td");
+    tdTime.textContent = fmtTime(c.t);   // 切り抜き開始からの秒（common.js）
+    tr.appendChild(tdTime);
     const tdA = document.createElement("td");
-    tdA.textContent = c.author || "";
+    // スパチャは金額、メンバー加入は種別を投稿者名に添えて区別できるようにする
+    tdA.textContent = (c.author || "") + (c.amount ? ` ${c.amount}` : "") + (c.type === "membership" ? "（メンバー）" : "");
     tr.appendChild(tdA);
     const tdT = document.createElement("td");
     const inp = document.createElement("input");
@@ -100,7 +104,7 @@ function renderComments() {
     const tdDel = document.createElement("td");
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "削除";
-    del.addEventListener("click", () => { draft.comments.splice(i, 1); renderComments(); });
+    del.addEventListener("click", () => { draft.chat.messages.splice(i, 1); renderChat(); });
     tdDel.appendChild(del);
     tr.appendChild(tdDel);
     tb.appendChild(tr);
@@ -190,8 +194,9 @@ function validate() {
     if (m.w <= 0 || m.h <= 0 || m.x < 0 || m.y < 0) return `四角 ${i + 1} 個目の座標が不正です`;
     if (m.end !== null && m.end !== undefined && m.end <= m.start) return `四角 ${i + 1} 個目の表示終了は表示開始より後にしてください`;
   }
-  for (let i = 0; i < draft.comments.length; i++) {
-    if (!draft.comments[i].text.trim()) return `コメント ${i + 1} 行目が空です（不要なら削除ボタンで消してください）`;
+  for (let i = 0; i < draft.chat.messages.length; i++) {
+    const c = draft.chat.messages[i];
+    if (!c.text.trim() && !c.amount) return `チャット ${i + 1} 行目が空です（不要なら削除ボタンで消してください）`;   // スパチャは金額のみ（本文なし）が正当
   }
   return null;
 }
@@ -204,9 +209,16 @@ async function init() {
     $("save").disabled = true;
     return;
   }
+  if (!d.chat) {
+    // 旧形式（comments）の draft は列構成が違うので黙って変換しない（P-03）
+    showError("古い形式の編集データです。YouTube のタブで「吸い出して編集画面を開く」からやり直してください。");
+    $("save").disabled = true;
+    return;
+  }
   draft = d;
   $("clipinfo").textContent = `${d.clip.title}（${d.clip.video_id}）` +
-    (d.captions.error ? ` — 字幕: ${d.captions.error}` : ` — 字幕 ${d.captions.cues.length} 行 / コメント ${d.comments.length} 件`);
+    (d.captions.error ? ` — 字幕: ${d.captions.error}` : ` — 字幕 ${d.captions.cues.length} 行`) +
+    (d.chat.error ? ` / チャット: ${d.chat.error}` : ` / チャット ${d.chat.messages.length} 件`);
   $("start_sec").value = fmtTime(d.clip.start_sec);
   $("end_sec").value = fmtTime(d.clip.end_sec);
   const updateLen = () => {
@@ -217,7 +229,7 @@ async function init() {
   $("start_sec").addEventListener("input", updateLen);
   $("end_sec").addEventListener("input", updateLen);
   renderFrames();
-  renderMasks(); renderCues(); renderComments(); setupDrawing();
+  renderMasks(); renderCues(); renderChat(); setupDrawing();
 
   $("addcue").addEventListener("click", () => {
     const last = draft.captions.cues[draft.captions.cues.length - 1];
@@ -228,10 +240,11 @@ async function init() {
   $("save").addEventListener("click", async () => {
     const err = validate();
     if (err) { showError(err); return; }
-    const base = await saveClipFiles(draft.clip, draft.captions.cues, draft.comments);
+    const base = await saveClipFiles(draft.clip, draft.captions.cues, draft.chat.messages);
     await chrome.storage.local.set({ draft });   // 保存後もこのタブで編集を続けられるように最新化
     showOk(`保存しました → ダウンロード/clip-maker/${base}.*\n` +
-           `焼き付け: clipmaker render "ダウンロード/clip-maker/${base}.clip.json" を PC で実行（プロ版）`);
+           `自動焼き付けが動いていれば、約1分で同じフォルダに ${base}.mp4（切り抜き動画）が出ます。\n` +
+           `動いていない場合は PC で clipmaker watch を起動（または clipmaker render で1本ずつ）。`);
   });
 }
 
