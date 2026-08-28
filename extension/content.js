@@ -212,6 +212,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ver: chrome.runtime.getManifest().version, t: v.currentTime });
     return;
   }
+  if (msg.type === "CLIP_PLAY") {
+    // 字幕行の「▶」用。指定の絶対秒へシークして再生し、dur 秒後に一時停止する（音声位置の確認）。
+    const v = document.querySelector("video");
+    if (!v) { sendResponse({ error: "YouTube の再生ページで使ってください" }); return; }
+    if (!Number.isFinite(msg.t) || msg.t < 0) { sendResponse({ error: "再生位置が不正です" }); return; }
+    v.currentTime = msg.t;
+    v.play().catch(() => {});
+    clearTimeout(window.__clipPlayTimer);   // 連打時は前の停止予約を破棄して最後の1回だけ効かせる
+    if (Number.isFinite(msg.dur) && msg.dur > 0) {
+      window.__clipPlayTimer = setTimeout(() => v.pause(), msg.dur * 1000);
+    }
+    sendResponse({ ver: chrome.runtime.getManifest().version, ok: true });
+    return;
+  }
   if (msg.type !== "CLIP_CAPTURE") return;
   (async () => {
     const v = document.querySelector("video");

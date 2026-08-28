@@ -68,13 +68,18 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     // 保存先は本物と同じ「ダウンロード/clip-maker/」。CDP で downloadPath を上書きすると名前が download.json に潰れるので触らない
     const before = await popup.evaluate(async () => (await chrome.downloads.search({ state: "complete" })).length);
     await page.bringToFront();   // 本物の popup と同じく「アクティブタブ＝YouTube」にする
-    await popup.evaluate((start, len) => {
+    // 長さ⇄終了の相互同期（v0.5.1・2026-08-28 指摘②: 長さ欄復活）: 終了を入れたら長さが自動計算される
+    const lenSync = await popup.evaluate((start, len) => {
       if (start !== undefined && start !== null) {
         document.getElementById("start").value = String(start);
-        document.getElementById("end").value = String(start + len);   // 終了欄（v0.5.0〜）
+        const end = document.getElementById("end");
+        end.value = String(start + len);
+        end.dispatchEvent(new Event("input"));
       }
-      document.getElementById("go").click();
+      return document.getElementById("length").value;
     }, START === undefined ? null : START, LEN);
+    console.log("length field after end input:", lenSync);
+    await popup.evaluate(() => document.getElementById("go").click());
     const edTarget = await browser.waitForTarget(t => t.url().includes("/editor.html"), { timeout: 15000 });
     const editor = await edTarget.page();
     await editor.bringToFront();
@@ -99,6 +104,14 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       return { cueband, chatRows };
     }, cueMid);
     console.log("preview:", JSON.stringify(pv), "/ start display:", startDisp);
+    // v0.5.1（2026-08-28 指摘③）: チャットは表示専用（input・追加ボタン無し）・字幕行に ▶（音声確認）ボタン
+    const ui051 = await editor.evaluate(() => ({
+      chatRows: document.querySelectorAll("#chat tbody tr").length,
+      chatInputs: document.querySelectorAll("#chat tbody input").length,
+      addChatBtn: !!document.getElementById("addchat"),
+      playBtns: document.querySelectorAll("#cues .playcue").length,
+    }));
+    console.log("ui v0.5.1:", JSON.stringify(ui051));
     // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当・描画モード切替は廃止＝常時ドラッグ可）
     const box = await (await editor.$("#overlay")).boundingBox();
     await editor.mouse.move(box.x + box.width * 0.70, box.y + box.height * 0.05);
@@ -140,7 +153,9 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     // previewOk: スライダーがあり、字幕時刻で字幕帯に本文が出て、末尾でチャットが 1 件以上出て、
     //            開始時刻が「1:24:09」形式（コロン入り）で表示されている
     const previewOk = pv && !pv.error && pv.cueband.length > 0 && pv.chatRows > 0 && /:/.test(startDisp);
-    const pass = ok && dlOk && maskOk && maskRows === 1 && previewOk;
+    // uiOk: 長さ欄が終了入力に同期し、チャット表は表示専用（行はあるが input と追加ボタンが無い）、字幕に ▶ がある
+    const uiOk = Number(lenSync) === LEN && ui051.chatRows > 0 && ui051.chatInputs === 0 && !ui051.addChatBtn && ui051.playBtns > 0;
+    const pass = ok && dlOk && maskOk && maskRows === 1 && previewOk && uiOk;
     console.log(pass ? "E2E_OK" : "E2E_FAILED");
     process.exitCode = pass ? 0 : 1;
   } finally { await browser.close(); }

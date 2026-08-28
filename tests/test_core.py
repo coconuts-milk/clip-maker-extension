@@ -49,7 +49,8 @@ def test_ffmpeg_args(monkeypatch):
     a = core.ffmpeg_args("src.mp4", spec, None, "o.mp4")
     assert a[a.index("-ss") + 1] == "1.500" and a[a.index("-to") + 1] == "4.000" and "-vf" not in a
     a = core.ffmpeg_args("src.mp4", spec, r"C:\x\a.srt", "o.mp4")
-    assert a[a.index("-vf") + 1] == "subtitles='C\:/x/a.srt'"
+    assert a[a.index("-vf") + 1] == f"subtitles='C\:/x/a.srt':force_style='{core.SUBTITLE_STYLE}'"
+    assert "PrimaryColour=&H00FFFFFF" in core.SUBTITLE_STYLE and "Bold=1" in core.SUBTITLE_STYLE
 
 
 def test_ffmpeg_args_offset(monkeypatch):
@@ -127,7 +128,7 @@ def test_render_srt_safe_copy(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, "", "")
     core.render(_clip(tmp_path), str(srt), str(tmp_path), run=run)
     args, cwd = calls[0]
-    assert args[args.index("-vf") + 1] == "subtitles='dQw4w9WgXcQ_10_25.burn.srt'"
+    assert args[args.index("-vf") + 1] == f"subtitles='dQw4w9WgXcQ_10_25.burn.srt':force_style='{core.SUBTITLE_STYLE}'"
     assert cwd == str(tmp_path)
     assert (tmp_path / "dQw4w9WgXcQ_10_25.burn.srt").read_text(encoding="utf-8").startswith("1")
 

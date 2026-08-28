@@ -31,29 +31,35 @@ function toSrt(cues) {
   return cues.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`).join("\n");
 }
 
+// 旧バージョン検出時の案内文（「パッケージ化されていない拡張」はファイルを差し替えても
+// 🔄を押すまで YouTube タブ側が旧版のまま動く）。
+function verErrorMsg(pageVer) {
+  return `旧バージョンの部品が動いています（ページ側 ${pageVer || "不明（旧版）"} / 本体 ${chrome.runtime.getManifest().version}）。\n` +
+         "chrome://extensions を開いて Clip Maker の更新（🔄）ボタンを押してから、もう一度お試しください（YouTube タブの再読み込みは不要）。";
+}
+
 // タブの content script へメッセージを送る。生きた content script が無いタブ
 // （拡張を入れる前から開いていた／拡張リロード直後）には inject.js(MAIN)+common.js+content.js を
-// その場で注入して 1 回だけ再試行する。popup と editor の両方がこれを使う（同じロジックを 2 箇所に持たない）。
+// その場で注入して 1 回だけ再試行する。応答 undefined（🔄前の旧版がこのメッセージ種別を知らず
+// 無応答＝2026-08-28 実機で発生）も同じ扱いにする。popup と editor の両方がこれを使う。
 async function messageWithInject(tabId, req) {
-  try { return await chrome.tabs.sendMessage(tabId, req); }
-  catch (_) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["inject.js"], world: "MAIN" });
-      await chrome.scripting.executeScript({ target: { tabId }, files: ["common.js", "content.js"] });
-      return await chrome.tabs.sendMessage(tabId, req);
-    } catch (_2) { throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度お試しください。"; }
-  }
+  let r;
+  try { r = await chrome.tabs.sendMessage(tabId, req); } catch (_) { r = undefined; }
+  if (r !== undefined) return r;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["inject.js"], world: "MAIN" });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["common.js", "content.js"] });
+    r = await chrome.tabs.sendMessage(tabId, req);
+  } catch (_2) { throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度お試しください。"; }
+  if (r === undefined) throw verErrorMsg(undefined);   // 注入後も無応答＝旧版 listener しか居ない
+  return r;
 }
 
 // content script の応答を検証する。error はそのまま投げ、旧バージョンの部品が動いていたら🔄を案内する。
 function assertVer(r) {
-  if (!r || r.error) throw (r && r.error) || "取得に失敗しました";
-  const my = chrome.runtime.getManifest().version;
-  if (r.ver !== my) {
-    // 「パッケージ化されていない拡張」はファイルを差し替えても🔄を押すまで YouTube タブ側が旧版のまま動く
-    throw `旧バージョンの部品が動いています（ページ側 ${r.ver || "0.2 以前"} / 本体 ${my}）。\n` +
-          "chrome://extensions を開いて Clip Maker の更新（🔄）ボタンを押してから、もう一度お試しください（YouTube タブの再読み込みは不要）。";
-  }
+  if (r === undefined || r === null) throw verErrorMsg(undefined);
+  if (r.error) throw r.error;
+  if (r.ver !== chrome.runtime.getManifest().version) throw verErrorMsg(r.ver);
   return r;
 }
 

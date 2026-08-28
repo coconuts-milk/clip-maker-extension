@@ -20,13 +20,30 @@ async function capture(withFrames) {
   const start = parseTimeStr(document.getElementById("start").value);   // common.js
   if (start === null) throw "開始時間は「1:24:09」か「5049」（秒）の形式で入れてください";
   const end = parseTimeStr(document.getElementById("end").value);
-  if (end === null) throw "終了時間は「1:24:25」か「5065」（秒）の形式で入れてください（空欄＝開始から 15 秒）";
-  // end が undefined（空欄）なら content.js が開始+15 秒で切る。不正な範囲は content.js が明示エラーを返す
-  const r = await messageWithInject(tab.id, { type: "CLIP_CAPTURE", start, end, withFrames, length: 15 });
+  if (end === null) throw "終了時間は「1:24:25」か「5065」（秒）の形式で入れてください（空欄＝開始+長さ）";
+  const len = Number(document.getElementById("length").value) || undefined;
+  // end が undefined（空欄）なら content.js が開始+length（未入力なら 15）秒で切る。不正な範囲は content.js が明示エラーを返す
+  const r = await messageWithInject(tab.id, { type: "CLIP_CAPTURE", start, end, withFrames, length: len || 15 });
   return assertVer(r);
 }
 
 document.getElementById("ver").textContent = "v" + chrome.runtime.getManifest().version;
+
+// 「長さ」と「終了」の相互同期（2026-08-28 エイジ指摘②: 長さ欄を消さない。両方置いて片方を入れたらもう片方を自動計算）
+const startEl = document.getElementById("start"), endEl = document.getElementById("end"), lenEl = document.getElementById("length");
+function syncFromLength() {
+  const start = parseTimeStr(startEl.value), len = Number(lenEl.value);
+  if (start !== null && start !== undefined && len > 0) endEl.value = fmtTime(start + len);
+}
+function syncFromEnd() {
+  const start = parseTimeStr(startEl.value), end = parseTimeStr(endEl.value);
+  if (start !== null && start !== undefined && end !== null && end !== undefined && end > start) {
+    lenEl.value = String(Math.round((end - start) * 10) / 10);
+  }
+}
+lenEl.addEventListener("input", syncFromLength);
+endEl.addEventListener("input", syncFromEnd);
+startEl.addEventListener("input", () => { if (lenEl.value) syncFromLength(); else syncFromEnd(); });
 
 document.getElementById("nowbtn").addEventListener("click", async () => {
   const msg = document.getElementById("msg");
@@ -34,6 +51,7 @@ document.getElementById("nowbtn").addEventListener("click", async () => {
     const tab = await ytTab();
     const r = assertVer(await messageWithInject(tab.id, { type: "CLIP_GET_TIME" }));
     document.getElementById("start").value = fmtTime(r.t);
+    if (lenEl.value) syncFromLength(); else syncFromEnd();   // 開始が変わったので他欄も追随
     msg.id = "msg"; msg.textContent = "";
   } catch (e) { msg.id = "msg"; msg.textContent = String(e); }
 });

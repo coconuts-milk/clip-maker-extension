@@ -139,6 +139,13 @@ function renderCues() {
   tb.textContent = "";
   draft.captions.cues.forEach((cue, i) => {
     const tr = document.createElement("tr");
+    // ▶: YouTube タブでこの字幕の音声位置を再生する（文字だけでは修正できない＝2026-08-28 エイジ指摘③）
+    const tdPlay = document.createElement("td");
+    const play = document.createElement("button");
+    play.className = "playcue"; play.textContent = "▶"; play.title = "YouTube タブでこの字幕の位置を再生（音声確認）";
+    play.addEventListener("click", () => playCue(cue));
+    tdPlay.appendChild(play);
+    tr.appendChild(tdPlay);
     for (const key of ["start", "end"]) {
       const td = document.createElement("td");
       const inp = document.createElement("input");
@@ -163,48 +170,33 @@ function renderCues() {
   });
 }
 
-// ---- チャット表 ----
+// ---- チャット表（表示専用。チャットは編集しない＝2026-08-28 エイジ指摘③。author は chat.json には保存され続ける） ----
 
 function renderChat() {
   $("chatmsg").textContent = draft.chat.error ? `チャットを取得できていません: ${draft.chat.error}\n→ ①の「🔄 この範囲で吸い出し直す」で再取得できます。` :
-    draft.chat.messages.length === 0 ? "この範囲にチャットがありません（必要なら下の「チャットを追加」で手で入れられます）。" : "";
+    draft.chat.messages.length === 0 ? "この範囲にチャットがありません。" : "";
   const tb = $("chat").querySelector("tbody");
   tb.textContent = "";
-  draft.chat.messages.forEach((c, i) => {
+  for (const c of draft.chat.messages) {
     const tr = document.createElement("tr");
     const tdTime = document.createElement("td");
-    const t = document.createElement("input");
-    t.type = "number"; t.value = c.t;
-    t.addEventListener("input", () => { c.t = Number(t.value); renderPreview(); });
-    tdTime.appendChild(t);
+    tdTime.textContent = String(c.t);
     tr.appendChild(tdTime);
-    const tdA = document.createElement("td");
-    const a = document.createElement("input");
-    a.type = "text"; a.value = c.author || "";
-    a.addEventListener("input", () => { c.author = a.value; renderPreview(); });
-    tdA.appendChild(a);
-    // スパチャは金額、メンバー加入は種別を投稿者欄の下に添えて区別できるようにする
-    if (c.amount || c.type === "membership") {
-      const tag = document.createElement("div");
-      tag.className = "note";
-      tag.textContent = (c.amount || "") + (c.type === "membership" ? "（メンバー）" : "");
-      tdA.appendChild(tag);
-    }
-    tr.appendChild(tdA);
     const tdT = document.createElement("td");
-    const inp = document.createElement("input");
-    inp.type = "text"; inp.value = c.text;
-    inp.addEventListener("input", () => { c.text = inp.value; renderPreview(); });
-    tdT.appendChild(inp);
+    if (c.amount) { const s = document.createElement("span"); s.className = "amt"; s.textContent = `${c.amount} `; tdT.appendChild(s); }
+    if (c.type === "membership") { const s = document.createElement("span"); s.className = "note"; s.textContent = "（メンバー）"; tdT.appendChild(s); }
+    tdT.appendChild(document.createTextNode(c.text));
     tr.appendChild(tdT);
-    const tdDel = document.createElement("td");
-    const del = document.createElement("button");
-    del.className = "del"; del.textContent = "削除";
-    del.addEventListener("click", () => { draft.chat.messages.splice(i, 1); renderChat(); renderPreview(); });
-    tdDel.appendChild(del);
-    tr.appendChild(tdDel);
     tb.appendChild(tr);
-  });
+  }
+}
+
+// 字幕行の ▶: YouTube タブを字幕の絶対位置へシークして再生（字幕の長さ分だけ流れて自動停止）
+async function playCue(cue) {
+  try {
+    await sendToTab({ type: "CLIP_PLAY", t: draft.clip.start_sec + cue.start, dur: Math.max(cue.end - cue.start, 0.5) });
+    $("cuesmsg").textContent = "";
+  } catch (e) { $("cuesmsg").textContent = String(e); }
 }
 
 // ---- プレビュー（時刻スライダー + 最寄りコマ + 字幕帯 + その時点までのチャット） ----
@@ -256,7 +248,7 @@ function renderPreview() {
     const d = document.createElement("div");
     d.className = "cm";
     const b = document.createElement("b");
-    b.textContent = `${fmtTime(m.t)} ${m.author || ""}`;
+    b.textContent = fmtTime(m.t);   // 投稿者は出さない（2026-08-28 エイジ指摘③: 投稿者不要）
     d.appendChild(b);
     if (m.amount) { const s = document.createElement("span"); s.className = "amt"; s.textContent = ` ${m.amount}`; d.appendChild(s); }
     d.appendChild(document.createTextNode(" " + m.text));
@@ -321,11 +313,7 @@ function validate() {
     if (m.w <= 0 || m.h <= 0 || m.x < 0 || m.y < 0) return `四角 ${i + 1} 個目の座標が不正です`;
     if (m.end !== null && m.end !== undefined && m.end <= m.start) return `四角 ${i + 1} 個目の表示終了は表示開始より後にしてください`;
   }
-  for (let i = 0; i < draft.chat.messages.length; i++) {
-    const c = draft.chat.messages[i];
-    if (!c.text.trim() && !c.amount) return `チャット ${i + 1} 行目が空です（不要なら削除ボタンで消してください）`;   // スパチャは金額のみ（本文なし）が正当
-  }
-  return null;
+  return null;   // チャットは表示専用なので検査対象外（吸い出したままを保存する）
 }
 
 function renderAll() {
@@ -366,12 +354,6 @@ async function init() {
     const last = draft.captions.cues[draft.captions.cues.length - 1];
     draft.captions.cues.push({ start: last ? last.end : 0, end: (last ? last.end : 0) + 2, text: "" });
     renderCues(); renderPreview();
-  });
-
-  $("addchat").addEventListener("click", () => {
-    const last = draft.chat.messages[draft.chat.messages.length - 1];
-    draft.chat.messages.push({ t: last ? last.t : 0, author: "", text: "" });
-    renderChat(); renderPreview();
   });
 
   $("save").addEventListener("click", async () => {

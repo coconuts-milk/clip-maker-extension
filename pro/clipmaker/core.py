@@ -161,6 +161,20 @@ def download_source(video_id: str, out_dir: str, run: Callable = subprocess.run,
     return out
 
 
+# 焼き付け字幕の見た目（libass force_style）。YouTube 既定の字幕が見にくいという 2026-08-28
+# エイジ指摘への対応。白文字+黒縁太字は背景の明暗に依存せず読める（放送字幕の定石）。
+# libass は SRT に PlayResY=288 を仮定するため、サイズ・縁・余白は 288px 高基準の値。
+SUBTITLE_FONT = "Meiryo"        # Windows 標準の和文ゴシック（可読性重視）
+SUBTITLE_FONT_SIZE = 20         # 288 基準で画面高の約 7% ＝ TV 字幕相当の大きさ
+SUBTITLE_OUTLINE = 2            # 黒縁の太さ。1 だと細部が背景に溶ける、3 だと文字が潰れる
+SUBTITLE_MARGIN_V = 20          # 下端からの余白（288 基準で約 7%。プレーヤーの UI と重ねない）
+SUBTITLE_STYLE = (
+    f"FontName={SUBTITLE_FONT},FontSize={SUBTITLE_FONT_SIZE},Bold=1,"
+    f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,"
+    f"Outline={SUBTITLE_OUTLINE},Shadow=0,MarginV={SUBTITLE_MARGIN_V}"
+)
+
+
 def ffmpeg_args(source: str, spec: ClipSpec, srt: Optional[str], out: str, src_offset: float = 0.0) -> List[str]:
     """ffmpeg の引数を組み立てる（純関数・テスト対象）。
 
@@ -183,7 +197,8 @@ def ffmpeg_args(source: str, spec: ClipSpec, srt: Optional[str], out: str, src_o
                        f":enable='between(t,{m.start:.3f},{m_end:.3f})'")
     if srt:
         esc = srt.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-        filters.append(f"subtitles='{esc}'")
+        # force_style: libass デフォルト（細字・薄い縁）は見にくい → SUBTITLE_STYLE で上書き
+        filters.append(f"subtitles='{esc}':force_style='{SUBTITLE_STYLE}'")
     if filters:
         args += ["-vf", ",".join(filters)]
     args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart", out]

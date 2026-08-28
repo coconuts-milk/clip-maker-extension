@@ -29,9 +29,10 @@
   #stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; }
   #frame { position: absolute; inset: 0; width: 100%; height: 100%; }
   #overlay { position: absolute; inset: 0; cursor: crosshair; }
-  /* 字幕帯: 焼き付け時と同じ「下部・黒地に白文字」の見え方。マスクのドラッグを邪魔しない */
-  #cueband { position: absolute; left: 0; right: 0; bottom: 4%; text-align: center; pointer-events: none; }
-  #cueband span { background: rgba(0,0,0,.65); color: #fff; padding: 2px 8px; font-size: clamp(10px, 2.2vw, 20px); border-radius: 2px; box-decoration-break: clone; }
+  /* 字幕帯: 焼き付け時（core.py SUBTITLE_STYLE: 白文字+黒縁太字・背景なし）と同じ見え方。マスクのドラッグを邪魔しない */
+  #cueband { position: absolute; left: 0; right: 0; bottom: 6%; text-align: center; pointer-events: none; }
+  #cueband span { color: #fff; font-weight: 700; font-family: Meiryo, sans-serif; font-size: clamp(11px, 2.6vw, 22px);
+    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; }
   #stagemsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 16px; text-align: center; pointer-events: none; }
   .maskbox { position: absolute; background: rgba(0,0,0,.75); border: 2px solid #e33; box-sizing: border-box; }
   #timebar { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
@@ -41,7 +42,7 @@
   #chatnow { flex: 1; overflow-y: auto; font-size: 12px; }
   #chatnow .cm { padding: 2px 0; border-bottom: 1px dotted #e5e5e5; }
   #chatnow .cm b { color: #1d5fa3; font-weight: 600; }
-  #chatnow .cm .amt { color: #b8860b; font-weight: 700; }
+  .amt { color: #b8860b; font-weight: 700; }
   .secmsg { white-space: pre-wrap; color: #b00; font-size: 13px; margin: 4px 0; }
   #save { width: 100%; padding: 12px; font-weight: 700; font-size: 15px; }
   #msg { white-space: pre-wrap; color: #b00; margin-top: 8px; }
@@ -51,7 +52,7 @@
 <main>
   <h1>Clip Maker 編集画面 <span id="edver" class="note"></span></h1>
   <div class="sub" id="clipinfo"></div>
-  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② プレビューで確認・隠したい所をドラッグ</b> → <b>③ 字幕・チャットを直す</b> → <b>④ 保存</b></div>
+  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② プレビューで確認・隠したい所をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認・チャットは表示のみ）</b> → <b>④ 保存</b></div>
 
   <section>
     <h2>① 切り抜き範囲</h2>
@@ -81,17 +82,16 @@
   </section>
 
   <section>
-    <h2>③ 字幕 <span class="note">（時刻は切り抜き開始からの秒）</span></h2>
+    <h2>③ 字幕 <span class="note">（時刻は切り抜き開始からの秒。▶ で YouTube タブがその位置を再生する＝音声を聞きながら直せる）</span></h2>
     <div class="secmsg" id="cuesmsg"></div>
-    <table id="cues"><thead><tr><th>開始(秒)</th><th>終了(秒)</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="cues"><thead><tr><th></th><th>開始(秒)</th><th>終了(秒)</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
     <button class="row-add" id="addcue">字幕を追加</button>
   </section>
 
   <section>
-    <h2>③ チャット <span class="note">（配信アーカイブのチャット欄。時刻は切り抜き開始からの秒。スパチャは金額付き）</span></h2>
+    <h2>チャット <span class="note">（表示のみ・編集不要。時刻は切り抜き開始からの秒。スパチャは金額付き）</span></h2>
     <div class="secmsg" id="chatmsg"></div>
-    <table id="chat"><thead><tr><th>時刻(秒)</th><th>投稿者</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
-    <button class="row-add" id="addchat">チャットを追加</button>
+    <table id="chat"><thead><tr><th>時刻(秒)</th><th>内容</th></tr></thead><tbody></tbody></table>
   </section>
 
   <button id="save">④ 3 ファイルを保存（自動焼き付けが動いていれば約1分で mp4）</button>
