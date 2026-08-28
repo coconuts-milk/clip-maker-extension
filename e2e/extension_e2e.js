@@ -47,7 +47,11 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
         const tabs = await chrome.tabs.query({ url: "*://www.youtube.com/*" });
         const tab = tabs.find(t => t.url.includes(videoId));
         if (!tab) return { error: "YouTube タブが見つからない" };
-        return chrome.tabs.sendMessage(tab.id, { type: "CLIP_CAPTURE", start, length: len });
+        // 終了指定（end）の経路を通す。start 未指定のときだけ旧来の length 指定
+        const req = start !== undefined && start !== null
+          ? { type: "CLIP_CAPTURE", start, end: start + len }
+          : { type: "CLIP_CAPTURE", length: len };
+        return chrome.tabs.sendMessage(tab.id, req);
       }, VIDEO, START, LEN);
       if (result && result.captions && result.captions.cues && result.captions.cues.length > 0) break;
       console.log(`captions empty (attempt ${attempt}): ${result && result.captions ? result.captions.error || "" : "no result"}`);
@@ -65,8 +69,10 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
     const before = await popup.evaluate(async () => (await chrome.downloads.search({ state: "complete" })).length);
     await page.bringToFront();   // 本物の popup と同じく「アクティブタブ＝YouTube」にする
     await popup.evaluate((start, len) => {
-      if (start !== undefined && start !== null) document.getElementById("start").value = String(start);
-      document.getElementById("length").value = String(len);
+      if (start !== undefined && start !== null) {
+        document.getElementById("start").value = String(start);
+        document.getElementById("end").value = String(start + len);   // 終了欄（v0.5.0〜）
+      }
       document.getElementById("go").click();
     }, START === undefined ? null : START, LEN);
     const edTarget = await browser.waitForTarget(t => t.url().includes("/editor.html"), { timeout: 15000 });
@@ -78,9 +84,21 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       const i = document.getElementById("frame");
       return i && i.naturalWidth > 0;
     }, { timeout: 20000 });
-    const frameBtns = await editor.evaluate(() => document.querySelectorAll("#framebtns button").length);
     const startDisp = await editor.evaluate(() => document.getElementById("start_sec").value);
-    console.log("frame buttons:", frameBtns, "/ start display:", startDisp);
+    // プレビュー検査（2026-08-28 指示④）: 時刻スライダーを動かすと、その時点の字幕・チャットが出る
+    const cueMid = result.captions.cues.length ? (result.captions.cues[0].start + result.captions.cues[0].end) / 2 : 0;
+    const pv = await editor.evaluate((cueMid) => {
+      const slider = document.getElementById("pvtime");
+      if (!slider) return { error: "#pvtime が無い" };
+      const set = v => { slider.value = String(v); slider.dispatchEvent(new Event("input")); };
+      set(cueMid);   // 1 本目の字幕が出ている時刻 → 字幕帯に本文が出るはず
+      const cueband = document.getElementById("cueband").textContent.trim();
+      set(Number(slider.max));   // 区間の末尾 → それまでのチャットが出るはず
+      const chatRows = document.querySelectorAll("#chatnow .cm").length;
+      set(0);   // 表示を先頭に戻しておく
+      return { cueband, chatRows };
+    }, cueMid);
+    console.log("preview:", JSON.stringify(pv), "/ start display:", startDisp);
     // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当・描画モード切替は廃止＝常時ドラッグ可）
     const box = await (await editor.$("#overlay")).boundingBox();
     await editor.mouse.move(box.x + box.width * 0.70, box.y + box.height * 0.05);
@@ -119,9 +137,10 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       console.log("srt head:", fs.readFileSync(saved.find(f => f.endsWith(".srt")), "utf8").split(String.fromCharCode(10)).slice(0, 4).map(l => l.trim()).join(" | "));
     }
     console.log("mask rows in editor:", maskRows);
-    // frameOk: コマ 3 枚のボタンが出て、開始時刻が「1:24:09」形式（コロン入り）で表示されている
-    const frameOk = frameBtns === 3 && /:/.test(startDisp);
-    const pass = ok && dlOk && maskOk && maskRows === 1 && frameOk;
+    // previewOk: スライダーがあり、字幕時刻で字幕帯に本文が出て、末尾でチャットが 1 件以上出て、
+    //            開始時刻が「1:24:09」形式（コロン入り）で表示されている
+    const previewOk = pv && !pv.error && pv.cueband.length > 0 && pv.chatRows > 0 && /:/.test(startDisp);
+    const pass = ok && dlOk && maskOk && maskRows === 1 && previewOk;
     console.log(pass ? "E2E_OK" : "E2E_FAILED");
     process.exitCode = pass ? 0 : 1;
   } finally { await browser.close(); }

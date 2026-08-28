@@ -205,14 +205,30 @@ async function captureFrames(v, start, end) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === "CLIP_GET_TIME") {
+    // 「▶ 今の再生位置を開始にする」用。同期応答（待つものが無い）
+    const v = document.querySelector("video");
+    if (!v) { sendResponse({ error: "YouTube の再生ページで使ってください" }); return; }
+    sendResponse({ ver: chrome.runtime.getManifest().version, t: v.currentTime });
+    return;
+  }
   if (msg.type !== "CLIP_CAPTURE") return;
   (async () => {
     const v = document.querySelector("video");
     const id = videoId();
     if (!v || !id) { sendResponse({ error: "YouTube の再生ページで使ってください" }); return; }
     const start = Number.isFinite(msg.start) ? msg.start : v.currentTime;
-    const len = Math.min(Math.max(msg.length || 15, 1), MAX_CLIP_SEC);
-    const end = Math.min(start + len, Number.isFinite(v.duration) ? v.duration : start + len);
+    let end;
+    if (Number.isFinite(msg.end)) {
+      // 終了指定あり: 不正は黙って切り詰めず明示エラー（P-03）
+      if (msg.end <= start) { sendResponse({ error: `終了(${fmtTime(msg.end)}) は開始(${fmtTime(start)}) より後にしてください` }); return; }
+      if (msg.end - start > MAX_CLIP_SEC) { sendResponse({ error: `長さ ${(msg.end - start).toFixed(1)} 秒が無料版の上限 ${MAX_CLIP_SEC} 秒を超えています` }); return; }
+      end = msg.end;
+    } else {
+      const len = Math.min(Math.max(msg.length || 15, 1), MAX_CLIP_SEC);
+      end = start + len;
+    }
+    end = Math.min(end, Number.isFinite(v.duration) ? v.duration : end);
     const pr = playerResponse();
     const title = (pr && pr.videoDetails && pr.videoDetails.title) || document.title;
     const captions = await fetchCaptions(start, end);

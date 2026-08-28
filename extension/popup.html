@@ -10,8 +10,12 @@
   #ok { color: #080; }
 </style></head><body>
 <b>Clip Maker 無料版</b> <span id="ver" style="color:#888"></span>
-<label>開始（1:24:09 形式 または 秒・空欄＝今の再生位置）<input id="start" type="text" inputmode="numeric" placeholder="例: 1:24:09 または 5049"></label>
-<label>長さ（秒・最大 30）<input id="length" type="number" value="15" min="1" max="30"></label>
+<label>開始（1:24:09 形式 または 秒・空欄＝今の再生位置）</label>
+<div style="display:flex; gap:6px">
+  <input id="start" type="text" inputmode="numeric" placeholder="例: 1:24:09 または 5049" style="flex:1">
+  <button id="nowbtn" style="width:auto; margin:0; padding:4px 8px; font-weight:400" title="動画の今の再生位置を開始時間に入れる">▶ 今の位置</button>
+</div>
+<label>終了（空欄＝開始から 15 秒・最大 30 秒）<input id="end" type="text" inputmode="numeric" placeholder="例: 1:24:25 または 5065"></label>
 <button id="go">吸い出して編集画面を開く</button>
 <button id="savedirect">編集せずそのまま保存（3 ファイル）</button>
 <div id="msg"></div>
