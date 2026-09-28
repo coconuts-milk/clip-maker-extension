@@ -47,10 +47,18 @@ def test_ffmpeg_args(monkeypatch):
     monkeypatch.setattr(core, "_require", lambda c: c)
     spec = core.ClipSpec("dQw4w9WgXcQ", 1.5, 4.0)
     a = core.ffmpeg_args("src.mp4", spec, None, "o.mp4")
-    assert a[a.index("-ss") + 1] == "1.500" and a[a.index("-to") + 1] == "4.000" and "-vf" not in a
-    a = core.ffmpeg_args("src.mp4", spec, r"C:\x\a.srt", "o.mp4")
-    assert a[a.index("-vf") + 1] == f"subtitles='C\:/x/a.srt':force_style='{core.SUBTITLE_STYLE}'"
-    assert "PrimaryColour=&H00FFFFFF" in core.SUBTITLE_STYLE and "Bold=1" in core.SUBTITLE_STYLE
+    assert a[a.index("-ss") + 1] == "1.500" and a[a.index("-to") + 1] == "4.000"
+    assert a[a.index("-vf") + 1] == "scale=1920:1080"   # 座標基準に揃える scale は常に入る
+    a = core.ffmpeg_args("src.mp4", spec, r"C:\x\a.ass", "o.mp4")
+    assert a[a.index("-vf") + 1] == r"scale=1920:1080,subtitles='C\:/x/a.ass'"
+
+
+def test_video_filters_portrait():
+    spec = core.ClipSpec("dQw4w9WgXcQ", 0.0, 10.0, masks=[core.Mask(10, 20, 30, 40)],
+                         mode="portrait", crop=core.Crop(656, 0, 608, 1080))
+    vf = core.video_filters(spec, "a.ass")
+    assert vf[0] == "scale=1920:1080" and vf[1].startswith("drawbox=x=10:y=20")
+    assert vf[2] == "crop=608:1080:656:0" and vf[3] == "scale=1080:1920" and vf[4] == "subtitles='a.ass'"
 
 
 def test_ffmpeg_args_offset(monkeypatch):
@@ -116,21 +124,50 @@ def test_render_ok(tmp_path, monkeypatch):
     assert out.endswith("dQw4w9WgXcQ_10_25.mp4") and len(calls) == 1
 
 
-def test_render_srt_safe_copy(tmp_path, monkeypatch):
-    """空白・括弧入りの srt 名（Chrome の「a (1).srt」）でも、安全名にコピーして cwd=out_dir の相対名で焼ける。"""
+def test_render_srt_to_ass(tmp_path, monkeypatch):
+    """空白・括弧入りの srt 名（Chrome の「a (1).srt」）でも、安全名の .ass に変換して cwd=out_dir の相対名で焼ける。"""
     monkeypatch.setattr(core, "_require", lambda c: c)
     (tmp_path / "dQw4w9WgXcQ.source.mp4").write_bytes(b"")
     srt = tmp_path / "a (1).srt"
-    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nx\n", encoding="utf-8")
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nこんにちは\n", encoding="utf-8")
     calls = []
     def run(args, **kw):
         calls.append((args, kw.get("cwd")))
         return subprocess.CompletedProcess(args, 0, "", "")
     core.render(_clip(tmp_path), str(srt), str(tmp_path), run=run)
     args, cwd = calls[0]
-    assert args[args.index("-vf") + 1] == f"subtitles='dQw4w9WgXcQ_10_25.burn.srt':force_style='{core.SUBTITLE_STYLE}'"
+    assert args[args.index("-vf") + 1] == "scale=1920:1080,subtitles='dQw4w9WgXcQ_10_25.burn.ass'"
     assert cwd == str(tmp_path)
-    assert (tmp_path / "dQw4w9WgXcQ_10_25.burn.srt").read_text(encoding="utf-8").startswith("1")
+    ass = (tmp_path / "dQw4w9WgXcQ_10_25.burn.ass").read_text(encoding="utf-8-sig")
+    assert "PlayResX: 1920" in ass and "Dialogue: 0,0:00:00.00,0:00:02.00,Caption,,0,0,0,,こんにちは" in ass
+
+
+def test_render_bad_srt_before_ffmpeg(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "_require", lambda c: c)
+    (tmp_path / "dQw4w9WgXcQ.source.mp4").write_bytes(b"")
+    srt = tmp_path / "bad.srt"
+    srt.write_text("1\n00:00:00 --> 00:00:02\nx\n", encoding="utf-8")
+    calls = []
+    with pytest.raises(ValueError):
+        core.render(_clip(tmp_path), str(srt), str(tmp_path), run=lambda a, **k: calls.append(a))
+    assert calls == []
+
+
+def test_render_chat_overlay_requires_chat_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "_require", lambda c: c)
+    (tmp_path / "dQw4w9WgXcQ.source.mp4").write_bytes(b"")
+    cj = _clip(tmp_path, chat_overlay={"enabled": True})
+    with pytest.raises(RuntimeError, match="chat.json"):
+        core.render(cj, None, str(tmp_path), run=lambda a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    chat = tmp_path / "a.chat.json"
+    chat.write_text(json.dumps([{"t": 1.0, "author": "x", "text": "わこつ"}]), encoding="utf-8")
+    calls = []
+    def run(args, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+    core.render(cj, None, str(tmp_path), run=run, chat_json=str(chat))
+    assert "subtitles='dQw4w9WgXcQ_10_25.burn.ass'" in calls[0][calls[0].index("-vf") + 1]
+    assert "わこつ" in (tmp_path / "dQw4w9WgXcQ_10_25.burn.ass").read_text(encoding="utf-8-sig")
 
 
 def test_render_empty_srt_skips_subtitles(tmp_path, monkeypatch):
@@ -144,7 +181,7 @@ def test_render_empty_srt_skips_subtitles(tmp_path, monkeypatch):
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
     core.render(_clip(tmp_path), str(srt), str(tmp_path), run=run)
-    assert "-vf" not in calls[0]
+    assert "subtitles" not in calls[0][calls[0].index("-vf") + 1]
 
 
 def _watch_files(tmp_path, base="a", age=10.0):
@@ -162,7 +199,7 @@ def _watch_files(tmp_path, base="a", age=10.0):
 def test_watch_targets(tmp_path):
     cj, srt = _watch_files(tmp_path)
     t = core.watch_targets(str(tmp_path))
-    assert t == [(cj, srt, os.path.join(str(tmp_path), "a.mp4"), os.path.join(str(tmp_path), "a.render_error.txt"))]
+    assert t == [(cj, srt, os.path.join(str(tmp_path), "a.mp4"), os.path.join(str(tmp_path), "a.render_error.txt"), None)]
     # 処理済み（json より新しい mp4）は返らない
     (tmp_path / "a.mp4").write_bytes(b"x")
     assert core.watch_targets(str(tmp_path)) == []
@@ -183,7 +220,7 @@ def test_watch_targets_chrome_rename(tmp_path):
     os.utime(cj, (old, old))
     t = core.watch_targets(str(tmp_path))
     assert t == [(str(cj), str(srt), os.path.join(str(tmp_path), "a (1).mp4"),
-                  os.path.join(str(tmp_path), "a (1).render_error.txt"))]
+                  os.path.join(str(tmp_path), "a (1).render_error.txt"), None)]
 
 
 def test_watch_targets_failed_marker(tmp_path):
@@ -200,7 +237,7 @@ def test_watch_once_ok_and_error(tmp_path):
     old = __import__("time").time() - 20   # json（10 秒前）より古い＝前回保存分の失敗 → 今回の json は未処理扱い
     os.utime(tmp_path / "ok.render_error.txt", (old, old))
     cache = tmp_path / ".cache"; cache.mkdir()
-    def fake_render(clip_json, srt, out_dir, run=None):
+    def fake_render(clip_json, srt, out_dir, run=None, chat_json=None):
         if "bad" in clip_json:
             raise RuntimeError("わざと失敗")
         p = os.path.join(out_dir, "rendered.mp4")
@@ -226,3 +263,78 @@ def test_render_section_when_no_full_source(tmp_path):
     ydl, ff = calls  # 呼び出し順: yt-dlp → ffmpeg
     assert ydl[ydl.index("--download-sections") + 1] == "*5-30"
     assert ff[ff.index("-ss") + 1] == "5.000" and ff[ff.index("-to") + 1] == "20.000"
+
+
+def test_load_clip_frame(tmp_path):
+    s = core.load_clip(_clip(tmp_path))
+    assert s.mode == "landscape" and s.crop is None and s.chat_overlay["enabled"] is False   # 古い clip.json
+    s = core.load_clip(_clip(tmp_path, frame={"mode": "portrait", "crop": {"x": 656, "y": 0, "w": 608, "h": 1080}},
+                             chat_overlay={"enabled": True, "max": 3}))
+    assert s.mode == "portrait" and s.crop == core.Crop(656, 0, 608, 1080) and s.out_size == (1080, 1920)
+    assert s.chat_overlay["enabled"] is True and s.chat_overlay["max"] == 3 and s.chat_overlay["show_sec"] == 8.0
+    with pytest.raises(ValueError, match="frame.crop"):
+        core.load_clip(_clip(tmp_path, frame={"mode": "portrait"}))
+    with pytest.raises(ValueError, match="はみ出し"):
+        core.load_clip(_clip(tmp_path, frame={"mode": "portrait", "crop": {"x": 1400, "y": 0, "w": 608, "h": 1080}}))
+    with pytest.raises(ValueError, match="frame.mode"):
+        core.load_clip(_clip(tmp_path, frame={"mode": "square"}))
+
+
+def test_parse_srt(tmp_path):
+    p = tmp_path / "a.srt"
+    p.write_text("1\n00:00:01,500 --> 00:00:02,000\nこんにちは\n2行目\n\n2\n00:01:00,000 --> 00:01:04,250\nさようなら\n", encoding="utf-8")
+    cues = core.parse_srt(str(p))
+    assert cues == [{"start": 1.5, "end": 2.0, "text": "こんにちは\n2行目"}, {"start": 60.0, "end": 64.25, "text": "さようなら"}]
+
+
+def test_load_chat(tmp_path):
+    p = tmp_path / "a.chat.json"
+    p.write_text(json.dumps({"x": 1}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        core.load_chat(str(p))
+    p.write_text(json.dumps([{"author": "a", "text": "x"}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="'t'"):
+        core.load_chat(str(p))
+    p.write_text(json.dumps([{"t": 2, "author": "a", "text": "x", "amount": "¥500"}]), encoding="utf-8")
+    assert core.load_chat(str(p)) == [{"t": 2.0, "text": "x", "amount": "¥500"}]
+
+
+def test_visible_chat():
+    ov = {"max": 2, "show_sec": 8}
+    chat = [{"t": 1.0, "text": "a"}, {"t": 3.0, "text": "b"}, {"t": 5.0, "text": "c"}]
+    assert [m["text"] for m in core.visible_chat(chat, 4.0, ov)] == ["b", "a"]        # t 以前・新しい順
+    assert [m["text"] for m in core.visible_chat(chat, 6.0, ov)] == ["c", "b"]        # max 件で切る
+    assert [m["text"] for m in core.visible_chat(chat, 11.0, ov)] == ["c"]            # t+show_sec ちょうどで消える（b は 3+8=11）
+    assert [m["text"] for m in core.visible_chat(chat, 10.0, {"max": 5, "show_sec": 0})] == ["c", "b", "a"]   # 0 = 消さない
+
+
+def test_build_ass():
+    spec = core.ClipSpec("dQw4w9WgXcQ", 0.0, 20.0, chat_overlay={**core.DEFAULT_CHAT_OVERLAY, "enabled": True, "show_sec": 8})
+    cues = [{"start": 1.0, "end": 2.5, "text": "こんにちは"}]
+    chat = [{"t": 3.0, "text": "わこつ", "amount": None}, {"t": 5.0, "text": "草", "amount": "¥500"}]
+    ass = core.build_ass(cues, chat, spec)
+    assert "PlayResX: 1920\nPlayResY: 1080" in ass
+    assert "Dialogue: 0,0:00:01.00,0:00:02.50,Caption,,0,0,0,,こんにちは" in ass
+    chats = [l for l in ass.splitlines() if l.startswith("Dialogue: 1,")]
+    # 区切り: 3(わこつ) → 5(草 追加) → 11(わこつ 消える) → 13(草 消える)
+    assert [l.split(",")[1:3] for l in chats] == [["0:00:03.00", "0:00:05.00"], ["0:00:05.00", "0:00:11.00"], ["0:00:11.00", "0:00:13.00"]]
+    assert chats[1].endswith("わこつ") and core.CHAT_AMOUNT_COLOR in chats[1] and "¥500" in chats[1]   # 新しい順（草 が上）
+    # enabled=False ならチャット行は出ない・縦は PlayRes が 1080×1920
+    spec2 = core.ClipSpec("dQw4w9WgXcQ", 0.0, 20.0, mode="portrait", crop=core.Crop(0, 0, 608, 1080))
+    ass2 = core.build_ass(cues, chat, spec2)
+    assert "PlayResX: 1080\nPlayResY: 1920" in ass2 and "Dialogue: 1," not in ass2
+
+
+def test_wrap_text():
+    assert core.wrap_text("あいうえおかきくけこ", 5 * 10, 10) == "あいうえお\nかきくけこ"   # 全角 5 文字幅で折る
+    assert core.wrap_text("abcdefghij", 5 * 10, 10) == "abcdefghi\nj"                # 半角は 0.55em: 9 文字=4.95em は入り、10 文字目で折れる
+    assert core.wrap_text("短い", 100, 10) == "短い"
+    assert core.wrap_text("一行目\n二行目です", 3 * 10, 10) == "一行目\n二行目\nです"      # 元の改行は保持
+
+
+def test_build_ass_portrait_wraps_caption():
+    spec = core.ClipSpec("dQw4w9WgXcQ", 0.0, 5.0, mode="portrait", crop=core.Crop(0, 0, 608, 1080))
+    ass = core.build_ass([{"start": 0.0, "end": 1.0, "text": "こんにちは、字幕のテストです"}], [], spec)
+    cap = [l for l in ass.splitlines() if l.startswith("Dialogue: 0,")][0]
+    assert "\\N" in cap   # 1080 幅（余白 4%×2）に 75px × 14 文字は入らないので折り返される
+    assert "Style: Caption,Meiryo,75," in ass   # 短辺 1080 の 6.9%（横と同じ px）

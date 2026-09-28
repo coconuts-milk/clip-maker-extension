@@ -165,8 +165,12 @@ async function collectChat(v, start, end) {
 // ---- 編集画面のプレビュー用コマ画像 ----
 // YouTube 埋め込み iframe は拡張ページ（referer 無し）だとエラー 153 で拒否されるため、
 // 吸い出し時に <video> から実際のコマを canvas で撮って編集画面に渡す（2026-08-26 実機で確認）。
+// 2026-09-28: プレビューを「再生」できるよう、3 枚から FRAME_STEP_SEC 刻み（最大 FRAME_MAX 枚）に増やす。
+// storage.local（既定 10MB）に収めるため幅 960・JPEG 0.7（1 枚 ≒ 60KB × 31 枚 ≒ 2MB）。
 
-const FRAME_W = 1280;        // プレビュー幅。マスク位置決め用途には十分で storage も軽い
+const FRAME_W = 960;
+const FRAME_STEP_SEC = 2;    // コマの間隔。字幕・チャットの出入りを追うには 2 秒で十分（コマ自体は静止画）
+const FRAME_MAX = 31;        // 60 秒 ÷ 2 + 両端
 const SEEK_TIMEOUT_MS = 8000;
 const DECODE_WAIT_MS = 250;  // seeked 後にフレームが描画されるまでの余裕
 
@@ -179,7 +183,7 @@ function seekTo(v, t) {
   });
 }
 
-// 開始・中間・終了の 3 コマを {t: 開始からの相対秒, dataUrl} で返す。撮れないときは {error}。
+// 区間内のコマを {t: 開始からの相対秒, dataUrl} のリストで返す（開始・FRAME_STEP_SEC 刻み・終了）。撮れないときは {error}。
 async function captureFrames(v, start, end) {
   const origTime = v.currentTime, wasPaused = v.paused;
   try {
@@ -189,11 +193,16 @@ async function captureFrames(v, start, end) {
     canvas.width = FRAME_W;
     canvas.height = Math.round(FRAME_W * v.videoHeight / v.videoWidth);
     const ctx = canvas.getContext("2d");
+    const dur = end - start;
+    const step = Math.max(FRAME_STEP_SEC, dur / (FRAME_MAX - 1));
+    const times = [];
+    for (let t = 0; t < dur - 0.05; t += step) times.push(t);
+    times.push(Math.max(0, dur - 0.1));
     const list = [];
-    for (const t of [start, (start + end) / 2, Math.max(start, end - 0.1)]) {
-      await seekTo(v, t);
+    for (const rel of times) {
+      await seekTo(v, start + rel);
       ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-      list.push({ t: +(t - start).toFixed(1), dataUrl: canvas.toDataURL("image/jpeg", 0.8) });
+      list.push({ t: +rel.toFixed(1), dataUrl: canvas.toDataURL("image/jpeg", 0.7) });
     }
     return { w: canvas.width, h: canvas.height, list };
   } catch (e) {
@@ -209,7 +218,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // 「▶ 今の再生位置を開始にする」用。同期応答（待つものが無い）
     const v = document.querySelector("video");
     if (!v) { sendResponse({ error: "YouTube の再生ページで使ってください" }); return; }
-    sendResponse({ ver: chrome.runtime.getManifest().version, t: v.currentTime });
+    sendResponse({ ver: chrome.runtime.getManifest().version, t: v.currentTime, paused: v.paused, duration: v.duration });
     return;
   }
   if (msg.type === "CLIP_PLAY") {

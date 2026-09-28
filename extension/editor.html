@@ -3,7 +3,7 @@
 <title>Clip Maker 編集画面</title>
 <style>
   body { font: 14px system-ui, sans-serif; color: #222; background: #f6f6f4; margin: 0; }
-  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
   h1 { font-size: 18px; margin: 0 0 4px; }
   h2 { font-size: 15px; margin: 0 0 8px; }
   h3 { font-size: 13px; margin: 0 0 6px; color: #444; }
@@ -15,34 +15,55 @@
   th { color: #666; font-size: 12px; }
   input[type=number] { width: 72px; }
   input[type=text], textarea { width: 100%; box-sizing: border-box; }
-  input[type=text].time { width: 100px; font-size: 15px; text-align: center; }   /* input[type=text] の全幅指定より後に置いて勝たせる */
+  input[type=text].time { width: 110px; font-size: 16px; text-align: center; font-variant-numeric: tabular-nums; }
+  input[type=number].len { width: 70px; font-size: 16px; text-align: center; }
   button { padding: 5px 10px; }
   .del { color: #b00; background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
   .row-add { margin-top: 6px; }
-  .rangebtns { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  /* ① 範囲 */
+  .rangegrid { display: grid; grid-template-columns: auto auto auto; gap: 6px 14px; align-items: center; }
+  .rangegrid label { font-size: 12px; color: #555; }
+  .now { font-weight: 400; white-space: nowrap; }
+  #rangeview { font-size: 15px; margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
+  #rangeview.bad { color: #b00; }
+  .rangebtns { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   #recap { background: #1d5fa3; color: #fff; border: none; border-radius: 4px; font-weight: 600; }
   #capmsg { white-space: pre-wrap; color: #b00; margin-top: 6px; font-size: 13px; }
   #capmsg.ok { color: #080; }
   #capmsg.busy { color: #555; }
-  #pvrow { display: flex; gap: 12px; align-items: stretch; }
-  #stagewrap { flex: 2 1 0; min-width: 0; }
-  #stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; }
+  /* ② プレビュー */
+  .modebar { display: flex; gap: 14px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .modebar label { cursor: pointer; }
+  #pvrow { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+  #srcwrap { flex: 1 1 420px; min-width: 300px; }
+  #outwrap { flex: 0 0 auto; }
+  #stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; }
   #frame { position: absolute; inset: 0; width: 100%; height: 100%; }
   #overlay { position: absolute; inset: 0; cursor: crosshair; }
-  /* 字幕帯: 焼き付け時（core.py SUBTITLE_STYLE: 白文字+黒縁太字・背景なし）と同じ見え方。マスクのドラッグを邪魔しない */
-  #cueband { position: absolute; left: 0; right: 0; bottom: 6%; text-align: center; pointer-events: none; }
-  #cueband span { color: #fff; font-weight: 700; font-family: Meiryo, sans-serif; font-size: clamp(11px, 2.6vw, 22px);
-    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; }
+  .maskbox { position: absolute; background: rgba(0,0,0,.75); border: 2px solid #e33; box-sizing: border-box; pointer-events: none; }
+  #cropbox { position: absolute; top: 0; height: 100%; border: 3px solid #ffd400; box-sizing: border-box; cursor: grab;
+             box-shadow: 0 0 0 9999px rgba(0,0,0,.55); display: none; }
+  #cropbox span { position: absolute; left: 0; right: 0; top: 45%; text-align: center; color: #ffd400; font-weight: 700; font-size: 12px; text-shadow: 0 0 3px #000; }
   #stagemsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 16px; text-align: center; pointer-events: none; }
-  .maskbox { position: absolute; background: rgba(0,0,0,.75); border: 2px solid #e33; box-sizing: border-box; }
-  #timebar { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  /* 出力プレビュー（横 16:9 または 縦 9:16）。字幕・チャットは焼き付けと同じ配置で重ねる */
+  #out { position: relative; background: #000; overflow: hidden; height: 360px; aspect-ratio: 16 / 9; }
+  #out.portrait { aspect-ratio: 9 / 16; height: 480px; }
+  #outimg { position: absolute; top: 0; height: 100%; }
+  .outmask { position: absolute; background: #000; }
+  #cueband { position: absolute; left: 4%; right: 4%; bottom: 7%; text-align: center; pointer-events: none; }
+  #cueband span { color: #fff; font-weight: 700; font-family: Meiryo, sans-serif; line-height: 1.25; word-break: break-all;
+    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; }
+  #chatbox { position: absolute; cursor: grab; border: 1px dashed rgba(255,255,255,.35); box-sizing: border-box; padding: 2px; }
+  #chatbox .cm { color: #fff; font-family: Meiryo, sans-serif; font-weight: 700; line-height: 1.3; margin-bottom: .25em;
+    text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; word-break: break-all; }
+  #chatbox .cm .amt { color: #ffd400; }
+  #outmsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 12px; text-align: center; font-size: 12px; pointer-events: none; }
+  #timebar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  #play { width: 44px; font-size: 16px; }
   #pvtime { flex: 1; }
-  #pvtimedisp { font-variant-numeric: tabular-nums; min-width: 120px; text-align: right; font-size: 13px; color: #444; }
-  #chatpane { flex: 1 1 0; min-width: 200px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; background: #fafafa; display: flex; flex-direction: column; }
-  #chatnow { flex: 1; overflow-y: auto; font-size: 12px; }
-  #chatnow .cm { padding: 2px 0; border-bottom: 1px dotted #e5e5e5; }
-  #chatnow .cm b { color: #1d5fa3; font-weight: 600; }
-  .amt { color: #b8860b; font-weight: 700; }
+  #pvtimedisp { font-variant-numeric: tabular-nums; min-width: 190px; text-align: right; font-size: 13px; color: #444; }
+  .chatopts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-top: 8px; }
+  .chatopts input[type=number] { width: 56px; }
   .secmsg { white-space: pre-wrap; color: #b00; font-size: 13px; margin: 4px 0; }
   #save { width: 100%; padding: 12px; font-weight: 700; font-size: 15px; }
   #msg { white-space: pre-wrap; color: #b00; margin-top: 8px; }
@@ -52,33 +73,49 @@
 <main>
   <h1>Clip Maker 編集画面 <span id="edver" class="note"></span></h1>
   <div class="sub" id="clipinfo"></div>
-  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② プレビューで確認・隠したい所をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認・チャットは表示のみ）</b> → <b>④ 保存</b></div>
+  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② 横/縦を選び、プレビューを再生して字幕・チャットの見え方を確認。隠したい所は元画面をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認）</b> → <b>④ 保存</b></div>
 
   <section>
-    <h2>① 切り抜き範囲</h2>
-    開始 <input id="start_sec" type="text" class="time"> 〜 終了 <input id="end_sec" type="text" class="time">
-    <b id="lenview"></b>
-    <div class="rangebtns">
-      <button id="fromnow" title="YouTube タブの今の再生位置を開始にして、今の長さ分を吸い出し直す">▶ 今の再生位置を開始にする</button>
-      <button id="recap" title="上の開始・終了の範囲で字幕・チャット・プレビューを取り直す">🔄 この範囲で吸い出し直す</button>
+    <h2>① 切り抜き範囲 <span class="note">（最長 60 秒。開始・終了・長さのどれを変えても残りが追随）</span></h2>
+    <div class="rangegrid">
+      <label>開始</label><input id="start_sec" type="text" class="time"><button id="nowstart" class="now" title="YouTube タブの今の再生位置（停止中ならその時刻）を開始に入れる">▶ 今の位置を開始に</button>
+      <label>終了</label><input id="end_sec" type="text" class="time"><button id="nowend" class="now" title="YouTube タブの今の再生位置を終了に入れる">▶ 今の位置を終了に</button>
+      <label>長さ(秒)</label><input id="len_sec" type="number" class="len" min="1" max="60" step="0.1"><span class="note">「1:24:09」形式でも「5049」（秒）でも可</span>
     </div>
-    <div class="note">「1:24:09」形式でも「5049」（秒）でも入力できる。無料版の上限 30 秒。範囲を変えたら「🔄 この範囲で吸い出し直す」で字幕・チャットが新しい範囲になる。</div>
+    <div id="rangeview"></div>
+    <div class="rangebtns">
+      <button id="recap" title="上の開始・終了の範囲で字幕・チャット・プレビューを取り直す">🔄 この範囲で吸い出し直す</button>
+      <span class="note">範囲を変えたら押す（字幕・チャット・コマ画像が新しい範囲になる）</span>
+    </div>
     <div id="capmsg"></div>
   </section>
 
   <section>
-    <h2>② プレビュー — スライダーで時刻を動かすと、その時点の字幕・チャットの見え方が出る。隠したい所は画面上をドラッグ</h2>
+    <h2>② プレビュー</h2>
+    <div class="modebar">
+      出力: <label><input type="radio" name="mode" value="landscape" checked> 横（16:9・1920×1080）</label>
+      <label><input type="radio" name="mode" value="portrait"> 縦（Shorts・9:16・1080×1920）</label>
+      <span class="note" id="modenote"></span>
+    </div>
     <div id="pvrow">
-      <div id="stagewrap">
-        <div id="stage"><img id="frame" alt=""><div id="cueband"></div><div id="overlay"></div><div id="stagemsg"></div></div>
-        <div id="timebar"><input id="pvtime" type="range" min="0" max="15" step="0.1" value="0"><span id="pvtimedisp"></span></div>
+      <div id="srcwrap">
+        <h3>元画面 — 隠したい所をドラッグで四角に。縦のときは黄色い枠をドラッグして切り出す位置を決める</h3>
+        <div id="stage"><img id="frame" alt=""><div id="overlay"><div id="cropbox"><span>◀ ▶</span></div></div><div id="stagemsg"></div></div>
+        <table id="masks"><thead><tr><th>x</th><th>y</th><th>幅</th><th>高さ</th><th>表示開始(秒)</th><th>表示終了(空=最後まで)</th><th></th></tr></thead><tbody></tbody></table>
       </div>
-      <div id="chatpane">
-        <h3>この時点までのチャット（新しい順）</h3>
-        <div id="chatnow"></div>
+      <div id="outwrap">
+        <h3>出来上がり — 再生すると時間どおりに字幕・チャットが出る（チャット枠はドラッグで移動）</h3>
+        <div id="out"><img id="outimg" alt=""><div id="outmasks"></div><div id="cueband"></div><div id="chatbox"></div><div id="outmsg"></div></div>
       </div>
     </div>
-    <table id="masks"><thead><tr><th>x</th><th>y</th><th>幅</th><th>高さ</th><th>表示開始(秒)</th><th>表示終了(空=最後まで)</th><th></th></tr></thead><tbody></tbody></table>
+    <div id="timebar"><button id="play" title="プレビューを再生／停止（スペースキー）">▶</button><input id="pvtime" type="range" min="0" max="15" step="0.1" value="0"><span id="pvtimedisp"></span></div>
+    <div class="chatopts">
+      <label><input type="checkbox" id="chat_on"> チャットを動画に乗せる</label>
+      <label>同時に最大 <input type="number" id="chat_max" min="1" max="12" step="1"> 件</label>
+      <label>表示秒数 <input type="number" id="chat_show" min="0" max="60" step="1"> 秒（0=消さない）</label>
+      <label>枠の幅 <input type="number" id="chat_w" min="10" max="100" step="1"> %</label>
+      <label>文字の大きさ <input type="number" id="chat_font" min="1" max="8" step="0.2"> %（画面の短辺に対して）</label>
+    </div>
   </section>
 
   <section>

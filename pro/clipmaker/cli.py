@@ -1,4 +1,4 @@
-"""clipmaker CLI: `clipmaker render <base>.clip.json [--srt <base>.srt] [--out out/]`
+"""clipmaker CLI: `clipmaker render <base>.clip.json [--srt <base>.srt] [--chat <base>.chat.json] [--out out/]`
 または `clipmaker watch [保存フォルダ]`（拡張の保存を監視して自動で mp4 に焼き付ける）"""
 import argparse
 import os
@@ -13,6 +13,7 @@ def main(argv=None) -> int:
     r = sub.add_parser("render")
     r.add_argument("clip_json")
     r.add_argument("--srt", help="字幕ファイル（省略時は clip.json と同名の .srt があれば使う）")
+    r.add_argument("--chat", help="チャットファイル（省略時は clip.json と同名の .chat.json があれば使う。clip.json でチャット焼き込み ON のとき必要）")
     r.add_argument("--out", default="out")
     w = sub.add_parser("watch", help="保存フォルダを監視し、拡張が保存した clip.json を自動で mp4 に焼き付ける")
     w.add_argument("dir", nargs="?", default=os.path.join(os.path.expanduser("~"), "Downloads", "clip-maker"),
@@ -33,8 +34,12 @@ def main(argv=None) -> int:
     if srt is None:
         cand = a.clip_json.replace(".clip.json", ".srt")
         srt = cand if os.path.exists(cand) else None
+    chat = a.chat
+    if chat is None:
+        cand = a.clip_json.replace(".clip.json", ".chat.json")
+        chat = cand if os.path.exists(cand) else None
     try:
-        out = render(a.clip_json, srt, a.out)
+        out = render(a.clip_json, srt, a.out, chat_json=chat)
     except (ValueError, RuntimeError) as e:
         print(f"エラー: {e}", file=sys.stderr)
         return 1

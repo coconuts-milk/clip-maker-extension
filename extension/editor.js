@@ -1,18 +1,20 @@
 // 編集画面（2 段階フローの ②③④⑤）。popup が storage に置いた draft を読み、
-// YouTube タブと再通信して範囲の取り直し（吸い出し直し）もできる（2026-08-28 エイジ指示）。
-//   ① 今の再生位置をワンボタンで開始に ② 開始・終了を変えたら字幕・チャットを吸い出し直す
-//   ③ 字幕・チャットは必ず表示（取れないときは理由と再取得の案内） ④ 時刻スライダー付きプレビュー
-// マスク座標は 1920×1080 基準（プロ版 render は height<=1080 で取得するため）。
+// YouTube タブと再通信して範囲の取り直し（吸い出し直し）もできる。
+// 2026-09-28 エイジ指示:
+//   ①最長 60 秒 ②開始・終了が常に見える ③開始・終了・長さの 3 欄連動 ④開始・終了の両方に「▶ 今の位置」
+//   ⑤字幕・チャットを乗せた「出来上がり」プレビューを再生できる ⑥縦（Shorts 9:16）の切り出し
+// マスク・crop 座標は 1920×1080 基準（common.js VIDEO_W/H。プロ版 render は height<=1080 で取得するため）。
 
-const VIDEO_W = 1920, VIDEO_H = 1080;   // マスク座標の基準解像度
-const CHAT_NOW_MAX = 8;                 // プレビュー横に出す「この時点までのチャット」の件数（画面に収まる実用数）
+const CAPTION_FONT_PCT = 6.9;   // 字幕の文字高（出力の短辺に対する %）。core.py CAPTION_FONT_PCT と同じ
 
 let draft = null;
+let range = null;   // common.js setupRangeControl
 const $ = id => document.getElementById(id);
 
 function showError(text) { const m = $("msg"); m.className = ""; m.textContent = text; }
 function showOk(text) { const m = $("msg"); m.className = "ok"; m.textContent = text; }
 function capMsg(text, cls) { const m = $("capmsg"); m.className = cls || ""; m.textContent = text; }
+const persist = () => chrome.storage.local.set({ draft });
 
 // ---- YouTube タブとの再通信（吸い出し直し・今の再生位置） ----
 
@@ -32,57 +34,73 @@ async function sendToTab(req) {
   return assertVer(await messageWithInject(tab.id, req));   // common.js（popup と同じ経路）
 }
 
-// 範囲入力を検証して {start, end} を返す。不正はメッセージ文字列を throw。
-function parseRange() {
-  const start = parseTimeStr($("start_sec").value), end = parseTimeStr($("end_sec").value);
-  if (start === null || start === undefined || end === null || end === undefined) {
-    throw "開始・終了は「1:24:09」か「5049」（秒）の形式で入れてください";
-  }
-  if (end <= start) throw `終了(${fmtTime(end)}) は開始(${fmtTime(start)}) より後にしてください`;
-  if (end - start > MAX_CLIP_SEC) throw `長さ ${(end - start).toFixed(1)} 秒が無料版の上限 ${MAX_CLIP_SEC} 秒を超えています`;
-  return { start, end };
+// ① 範囲表示: 「1:24:09 〜 1:24:25（16.0 秒）」を常時表示。吸い出し済みの範囲と違えば注意も出す
+function showRange() {
+  const v = $("rangeview");
+  try {
+    const r = range.read();
+    const stale = draft && (Math.abs(r.start - draft.clip.start_sec) > 0.05 || Math.abs(r.end - draft.clip.end_sec) > 0.05);
+    v.className = ""; v.textContent = `${fmtTime(r.start)} 〜 ${fmtTime(r.end)}（${r.len.toFixed(1)} 秒）` + (stale ? "　← 変更あり。🔄 で吸い出し直してください" : "");
+  } catch (e) { v.className = "bad"; v.textContent = String(e); }
 }
 
-// 今の範囲で字幕・チャット・プレビューを取り直す。マスクは引き継ぐ（座標は範囲に依存しない）。
+// 今の範囲で字幕・チャット・プレビューを取り直す。マスク・レイアウト・チャット設定は引き継ぐ。
 async function recapture() {
-  let range;
-  try { range = parseRange(); } catch (e) { capMsg(String(e)); return; }
-  capMsg("吸い出し中…（数秒かかります。YouTube タブが一瞬シークします）", "busy");
+  let r0;
+  try { r0 = range.read(); } catch (e) { capMsg(String(e)); return; }
+  capMsg("吸い出し中…（コマ画像は 2 秒ごとに撮るので、60 秒なら 20 秒ほどかかります。YouTube タブがシークします）", "busy");
   let r;
-  try { r = await sendToTab({ type: "CLIP_CAPTURE", start: range.start, end: range.end, withFrames: true }); }
+  try { r = await sendToTab({ type: "CLIP_CAPTURE", start: r0.start, end: r0.end, withFrames: true }); }
   catch (e) { capMsg(String(e)); return; }
-  draft.clip = { ...r.clip, masks: draft.clip.masks };
+  draft.clip = { ...r.clip, masks: draft.clip.masks, frame: draft.clip.frame, chat_overlay: draft.clip.chat_overlay };
   draft.captions = r.captions;
   draft.chat = r.chat;
   draft.frames = r.frames;
-  await chrome.storage.local.set({ draft });
+  await persist();
   renderAll();
   capMsg(`吸い出し直しました: ${fmtTime(r.clip.start_sec)} 〜 ${fmtTime(r.clip.end_sec)}` +
          (r.captions.error ? `\n字幕: ${r.captions.error}` : `／字幕 ${r.captions.cues.length} 行`) +
          (r.chat.error ? `\nチャット: ${r.chat.error}` : `／チャット ${r.chat.messages.length} 件`), "ok");
 }
 
-// 「▶ 今の再生位置を開始にする」: 開始＝今、終了＝今＋現在の長さ、でそのまま吸い出し直す（1 アクション）。
-async function fromNow() {
+async function nowInto(which) {
   capMsg("再生位置を取得中…", "busy");
-  let r;
-  try { r = await sendToTab({ type: "CLIP_GET_TIME" }); } catch (e) { capMsg(String(e)); return; }
-  const cur = parseRange0();
-  const len = cur ? cur.end - cur.start : 15;
-  $("start_sec").value = fmtTime(r.t);
-  $("end_sec").value = fmtTime(r.t + len);
-  updateLen();
-  await recapture();
+  try {
+    const r = await sendToTab({ type: "CLIP_GET_TIME" });
+    if (which === "start") range.setStart(r.t); else range.setEnd(r.t);
+    capMsg(`${which === "start" ? "開始" : "終了"}に ${fmtTime(r.t)} を入れました${r.paused ? "（停止中の位置）" : ""}。🔄 を押すと吸い出し直します。`, "ok");
+  } catch (e) { capMsg(String(e)); }
 }
 
-// parseRange の throw しない版（fromNow が現在の長さを引き継ぐためだけに使う）
-function parseRange0() {
-  try { return parseRange(); } catch (_) { return null; }
+// ---- 出力レイアウト（横 / 縦） ----
+
+function frame() { return draft.clip.frame || (draft.clip.frame = defaultFrame("landscape")); }
+function isPortrait() { return frame().mode === "portrait"; }
+// 出力の座標系: 横は元画面そのまま、縦は crop 領域。元画面座標 → 出力に対する % に変換する
+function outRect() { return isPortrait() ? frame().crop : { x: 0, y: 0, w: VIDEO_W, h: VIDEO_H }; }
+
+function setMode(mode) {
+  const cur = frame();
+  if (cur.mode === mode) return;
+  draft.clip.frame = mode === "portrait" ? (cur.savedCrop ? { mode, crop: cur.savedCrop } : defaultFrame("portrait"))
+                                         : { mode: "landscape", savedCrop: cur.crop };
+  persist();
+  renderLayout();
 }
 
-function updateLen() {
-  const s = parseTimeStr($("start_sec").value), e = parseTimeStr($("end_sec").value);
-  $("lenview").textContent = (Number.isFinite(s) && Number.isFinite(e) && e > s) ? `（長さ ${(e - s).toFixed(1)} 秒）` : "";
+function renderLayout() {
+  const p = isPortrait();
+  $("out").className = p ? "portrait" : "";
+  $("modenote").textContent = p ? "元画面の黄色い枠（608×1080）を 1080×1920 に拡大して出力。枠はドラッグで左右に動かせる" : "元動画の画面全体をそのまま出力";
+  const cb = $("cropbox");
+  cb.style.display = p ? "block" : "none";
+  if (p) {
+    const c = frame().crop;
+    cb.style.left = (c.x / VIDEO_W * 100) + "%";
+    cb.style.width = (c.w / VIDEO_W * 100) + "%";
+  }
+  renderOverlay();
+  renderPreview();
 }
 
 // ---- マスク ----
@@ -99,7 +117,7 @@ function renderMasks() {
       inp.value = mask[key] === null || mask[key] === undefined ? "" : mask[key];
       inp.addEventListener("input", () => {
         mask[key] = inp.value === "" ? (key === "end" ? null : 0) : Number(inp.value);
-        renderOverlay();
+        renderOverlay(); renderPreview();
       });
       td.appendChild(inp);
       tr.appendChild(td);
@@ -107,7 +125,7 @@ function renderMasks() {
     const td = document.createElement("td");
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "削除";
-    del.addEventListener("click", () => { draft.clip.masks.splice(i, 1); renderMasks(); });
+    del.addEventListener("click", () => { draft.clip.masks.splice(i, 1); renderMasks(); renderPreview(); });
     td.appendChild(del);
     tr.appendChild(td);
     tb.appendChild(tr);
@@ -116,7 +134,7 @@ function renderMasks() {
 }
 
 function renderOverlay() {
-  // プレビュー上の黒矩形（% 配置なので表示サイズに依存しない）
+  // 元画面上の黒矩形（% 配置なので表示サイズに依存しない）
   const ov = $("overlay");
   ov.querySelectorAll(".maskbox").forEach(e => e.remove());
   for (const m of draft.clip.masks) {
@@ -126,7 +144,7 @@ function renderOverlay() {
     d.style.top = (m.y / VIDEO_H * 100) + "%";
     d.style.width = (m.w / VIDEO_W * 100) + "%";
     d.style.height = (m.h / VIDEO_H * 100) + "%";
-    ov.appendChild(d);
+    ov.insertBefore(d, $("cropbox"));
   }
 }
 
@@ -139,7 +157,6 @@ function renderCues() {
   tb.textContent = "";
   draft.captions.cues.forEach((cue, i) => {
     const tr = document.createElement("tr");
-    // ▶: YouTube タブでこの字幕の音声位置を再生する（文字だけでは修正できない＝2026-08-28 エイジ指摘③）
     const tdPlay = document.createElement("td");
     const play = document.createElement("button");
     play.className = "playcue"; play.textContent = "▶"; play.title = "YouTube タブでこの字幕の位置を再生（音声確認）";
@@ -170,7 +187,7 @@ function renderCues() {
   });
 }
 
-// ---- チャット表（表示専用。チャットは編集しない＝2026-08-28 エイジ指摘③。author は chat.json には保存され続ける） ----
+// ---- チャット表（表示専用。チャットは編集しない。author は chat.json には保存され続ける） ----
 
 function renderChat() {
   $("chatmsg").textContent = draft.chat.error ? `チャットを取得できていません: ${draft.chat.error}\n→ ①の「🔄 この範囲で吸い出し直す」で再取得できます。` :
@@ -199,29 +216,87 @@ async function playCue(cue) {
   } catch (e) { $("cuesmsg").textContent = String(e); }
 }
 
-// ---- プレビュー（時刻スライダー + 最寄りコマ + 字幕帯 + その時点までのチャット） ----
-// コマは吸い出し時に撮った実画像（iframe 埋め込みは拡張ページだとエラー 153 で拒否される）。
+// ---- チャット焼き込み設定 ----
+
+function chatOv() { return draft.clip.chat_overlay || (draft.clip.chat_overlay = { ...DEFAULT_CHAT_OVERLAY }); }
+
+function renderChatOpts() {
+  const o = chatOv();
+  $("chat_on").checked = !!o.enabled;
+  $("chat_max").value = o.max; $("chat_show").value = o.show_sec; $("chat_w").value = o.w_pct; $("chat_font").value = o.font_pct;
+}
+
+function bindChatOpts() {
+  $("chat_on").addEventListener("change", () => { chatOv().enabled = $("chat_on").checked; persist(); renderPreview(); });
+  const numOpt = (id, key, lo, hi) => $(id).addEventListener("input", () => {
+    const v = Number($(id).value);
+    if (Number.isFinite(v) && v >= lo && v <= hi) { chatOv()[key] = v; persist(); renderPreview(); }
+  });
+  numOpt("chat_max", "max", 1, 12); numOpt("chat_show", "show_sec", 0, 60); numOpt("chat_w", "w_pct", 10, 100); numOpt("chat_font", "font_pct", 1, 8);
+}
+
+// その時刻に画面に出ているチャット（焼き付けの core.py visible_chat と同じ規則: t 以前・show_sec 以内・新しい順に max 件）
+function visibleChat(t) {
+  const o = chatOv();
+  if (!o.enabled) return [];
+  return draft.chat.messages
+    .filter(m => m.t <= t && (o.show_sec <= 0 || t - m.t < o.show_sec))
+    .sort((a, b) => b.t - a.t).slice(0, o.max);
+}
+
+// ---- プレビュー（時刻スライダー + 再生 + 最寄りコマ + 字幕帯 + チャット枠。出力レイアウトで表示） ----
+
+function nearestFrame(t) {
+  const f = draft.frames;
+  if (!f || f.error || !f.list || !f.list.length) return null;
+  let best = f.list[0];
+  for (const fr of f.list) if (Math.abs(fr.t - t) < Math.abs(best.t - t)) best = fr;
+  return best;
+}
 
 function renderPreview() {
   const dur = draft.clip.end_sec - draft.clip.start_sec;
   const slider = $("pvtime");
   slider.max = dur.toFixed(1);
   const t = Math.min(Number(slider.value), dur);
-  $("pvtimedisp").textContent = `${fmtTime(draft.clip.start_sec + t)}（開始+${t.toFixed(1)}秒）`;
+  $("pvtimedisp").textContent = `${fmtTime(draft.clip.start_sec + t)}　開始+${t.toFixed(1)} / ${dur.toFixed(1)} 秒`;
 
-  // 最寄りコマ
+  const best = nearestFrame(t);
+  const img = $("frame"), sm = $("stagemsg"), oimg = $("outimg"), om = $("outmsg");
   const f = draft.frames;
-  const img = $("frame"), sm = $("stagemsg");
-  if (!f || f.error || !f.list || !f.list.length) {
-    sm.textContent = (f && f.error) ? `${f.error}\n→ ①の「🔄 この範囲で吸い出し直す」で撮り直せます。` :
-      "プレビュー画像がありません。①の「🔄 この範囲で吸い出し直す」を押すと表示されます（四角の指定は座標入力でも可能）。";
-    img.removeAttribute("src");
+  if (!best) {
+    const why = (f && f.error) ? `${f.error}\n→ ①の「🔄 この範囲で吸い出し直す」で撮り直せます。` :
+      "プレビュー画像がありません。①の「🔄 この範囲で吸い出し直す」を押すと表示されます。";
+    sm.textContent = why; om.textContent = why;
+    img.removeAttribute("src"); oimg.removeAttribute("src");
   } else {
-    sm.textContent = "";
-    let best = f.list[0];
-    for (const fr of f.list) if (Math.abs(fr.t - t) < Math.abs(best.t - t)) best = fr;
-    if (img.getAttribute("src") !== best.dataUrl) img.src = best.dataUrl;
+    sm.textContent = ""; om.textContent = "";
+    if (img.getAttribute("src") !== best.dataUrl) { img.src = best.dataUrl; oimg.src = best.dataUrl; }
   }
+
+  // 出力プレビューの画像配置: 横はそのまま、縦は crop 領域が枠いっぱいになるよう拡大して左にずらす
+  const r = outRect();
+  oimg.style.width = (VIDEO_W / r.w * 100) + "%";
+  oimg.style.left = (-r.x / r.w * 100) + "%";
+  oimg.style.top = (-r.y / r.h * 100) + "%";
+
+  // 出力上のマスク（その時刻に有効なものだけ。焼き付けの enable=between と同じ）
+  const om2 = $("outmasks");
+  om2.textContent = "";
+  for (const m of draft.clip.masks) {
+    const mEnd = m.end === null || m.end === undefined ? dur : m.end;
+    if (t < (m.start || 0) || t > mEnd) continue;
+    const d = document.createElement("div");
+    d.className = "outmask";
+    d.style.left = ((m.x - r.x) / r.w * 100) + "%";
+    d.style.top = ((m.y - r.y) / r.h * 100) + "%";
+    d.style.width = (m.w / r.w * 100) + "%";
+    d.style.height = (m.h / r.h * 100) + "%";
+    om2.appendChild(d);
+  }
+
+  const outEl = $("out");
+  const shortSide = Math.min(outEl.clientWidth || 640, outEl.clientHeight || 360);   // 文字の大きさは短辺基準（core.py build_ass と同じ）
 
   // 字幕帯（焼き付けと同じ「その時刻に出ている字幕」）
   const band = $("cueband");
@@ -229,47 +304,80 @@ function renderPreview() {
   const active = draft.captions.cues.filter(c => c.start <= t && t <= c.end && c.text.trim());
   for (const c of active) {
     const s = document.createElement("span");
+    s.style.fontSize = (shortSide * CAPTION_FONT_PCT / 100) + "px";
     s.textContent = c.text;
     band.appendChild(s);
     band.appendChild(document.createElement("br"));
   }
 
-  // この時点までのチャット（新しい順・直近 CHAT_NOW_MAX 件）
-  const pane = $("chatnow");
-  pane.textContent = "";
-  const past = draft.chat.messages.filter(m => m.t <= t).sort((a, b) => b.t - a.t).slice(0, CHAT_NOW_MAX);
-  if (!past.length) {
-    const d = document.createElement("div");
-    d.className = "note";
-    d.textContent = draft.chat.error ? "チャット未取得（③の欄を参照）" : "この時点より前のチャットはまだ無い（スライダーを右へ）";
-    pane.appendChild(d);
-  }
-  for (const m of past) {
+  // チャット枠（焼き付けと同じ配置。新しいものが上）
+  const o = chatOv();
+  const box = $("chatbox");
+  box.style.display = o.enabled ? "block" : "none";
+  box.style.left = o.x_pct + "%"; box.style.top = o.y_pct + "%"; box.style.width = o.w_pct + "%";
+  box.textContent = "";
+  for (const m of visibleChat(t)) {
     const d = document.createElement("div");
     d.className = "cm";
-    const b = document.createElement("b");
-    b.textContent = fmtTime(m.t);   // 投稿者は出さない（2026-08-28 エイジ指摘③: 投稿者不要）
-    d.appendChild(b);
-    if (m.amount) { const s = document.createElement("span"); s.className = "amt"; s.textContent = ` ${m.amount}`; d.appendChild(s); }
-    d.appendChild(document.createTextNode(" " + m.text));
-    pane.appendChild(d);
+    d.style.fontSize = (shortSide * o.font_pct / 100) + "px";
+    if (m.amount) { const s = document.createElement("span"); s.className = "amt"; s.textContent = `${m.amount} `; d.appendChild(s); }
+    d.appendChild(document.createTextNode(m.text));
+    box.appendChild(d);
   }
 }
 
-// ---- 矩形の描画（プレビュー上をドラッグで追加・常時有効） ----
+// 再生: スライダーを実時間で進める（コマは静止画の切替だが字幕・チャット・マスクの出入りは実時間どおり）
+let playing = null;   // {t0: performance.now(), s0: 開始スライダー値}
+function setPlaying(on) {
+  if (on) {
+    const dur = draft.clip.end_sec - draft.clip.start_sec;
+    if (Number($("pvtime").value) >= dur - 0.05) $("pvtime").value = 0;   // 末尾で押したら頭から
+    playing = { t0: performance.now(), s0: Number($("pvtime").value) };
+    $("play").textContent = "⏸";
+    requestAnimationFrame(tick);
+  } else {
+    playing = null;
+    $("play").textContent = "▶";
+  }
+}
+function tick(now) {
+  if (!playing) return;
+  const dur = draft.clip.end_sec - draft.clip.start_sec;
+  const t = playing.s0 + (now - playing.t0) / 1000;
+  if (t >= dur) { $("pvtime").value = dur; renderPreview(); setPlaying(false); return; }
+  $("pvtime").value = t.toFixed(1);
+  renderPreview();
+  requestAnimationFrame(tick);
+}
+
+// ---- 元画面上の操作: マスクをドラッグで追加／縦のときは黄色い枠をドラッグで移動 ----
 function setupDrawing() {
-  const ov = $("overlay");
-  let p0 = null, tmp = null;
+  const ov = $("overlay"), cb = $("cropbox");
+  let p0 = null, tmp = null, cropDrag = null;
   const toVideo = ev => {
     const r = ov.getBoundingClientRect();
     return { x: Math.round((ev.clientX - r.left) / r.width * VIDEO_W),
              y: Math.round((ev.clientY - r.top) / r.height * VIDEO_H) };
   };
+  cb.addEventListener("mousedown", ev => {
+    if (!isPortrait()) return;
+    cropDrag = { x0: toVideo(ev).x, cx0: frame().crop.x };
+    ev.stopPropagation(); ev.preventDefault();
+  });
+  window.addEventListener("mousemove", ev => {
+    if (!cropDrag) return;
+    const c = frame().crop;
+    c.x = Math.max(0, Math.min(VIDEO_W - c.w, Math.round(cropDrag.cx0 + toVideo(ev).x - cropDrag.x0)));
+    cb.style.left = (c.x / VIDEO_W * 100) + "%";
+    renderPreview();
+  });
+  window.addEventListener("mouseup", () => { if (cropDrag) { cropDrag = null; persist(); } });
+
   ov.addEventListener("mousedown", ev => {
     p0 = toVideo(ev);
     tmp = document.createElement("div");
     tmp.className = "maskbox";
-    ov.appendChild(tmp);
+    ov.insertBefore(tmp, cb);
     ev.preventDefault();
   });
   ov.addEventListener("mousemove", ev => {
@@ -292,15 +400,32 @@ function setupDrawing() {
     if (w < 4 || h < 4) { showError("四角が小さすぎます（もう少し大きくドラッグしてください）"); return; }
     draft.clip.masks.push({ x, y, w, h, start: 0, end: null });
     showOk("");
-    renderMasks();
+    renderMasks(); renderPreview(); persist();
   });
+
+  // 出力プレビュー上のチャット枠をドラッグで移動（座標は出力に対する %）
+  const box = $("chatbox"), out = $("out");
+  let boxDrag = null;
+  box.addEventListener("mousedown", ev => {
+    const r = out.getBoundingClientRect();
+    boxDrag = { px: ev.clientX, py: ev.clientY, x0: chatOv().x_pct, y0: chatOv().y_pct, w: r.width, h: r.height };
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", ev => {
+    if (!boxDrag) return;
+    const o = chatOv();
+    o.x_pct = Math.max(0, Math.min(100 - o.w_pct, Math.round(boxDrag.x0 + (ev.clientX - boxDrag.px) / boxDrag.w * 100)));
+    o.y_pct = Math.max(0, Math.min(95, Math.round(boxDrag.y0 + (ev.clientY - boxDrag.py) / boxDrag.h * 100)));
+    renderPreview();
+  });
+  window.addEventListener("mouseup", () => { if (boxDrag) { boxDrag = null; persist(); } });
 }
 
 // ---- 保存（検証してから 3 ファイル） ----
 function validate() {
-  let range;
-  try { range = parseRange(); } catch (e) { return String(e); }
-  if (Math.abs(range.start - draft.clip.start_sec) > 0.5 || Math.abs(range.end - draft.clip.end_sec) > 0.5) {
+  let r;
+  try { r = range.read(); } catch (e) { return String(e); }
+  if (Math.abs(r.start - draft.clip.start_sec) > 0.5 || Math.abs(r.end - draft.clip.end_sec) > 0.5) {
     return "範囲を変えた後は ①の「🔄 この範囲で吸い出し直す」を押してから保存してください（字幕・チャットが古い範囲のままです）";
   }
   for (let i = 0; i < draft.captions.cues.length; i++) {
@@ -313,6 +438,10 @@ function validate() {
     if (m.w <= 0 || m.h <= 0 || m.x < 0 || m.y < 0) return `四角 ${i + 1} 個目の座標が不正です`;
     if (m.end !== null && m.end !== undefined && m.end <= m.start) return `四角 ${i + 1} 個目の表示終了は表示開始より後にしてください`;
   }
+  if (isPortrait()) {
+    const c = frame().crop;
+    if (c.x < 0 || c.x + c.w > VIDEO_W || c.w <= 0 || c.h <= 0) return "縦の切り出し枠が画面からはみ出しています";
+  }
   return null;   // チャットは表示専用なので検査対象外（吸い出したままを保存する）
 }
 
@@ -320,10 +449,10 @@ function renderAll() {
   $("clipinfo").textContent = `${draft.clip.title}（${draft.clip.video_id}）` +
     (draft.captions.error ? ` — 字幕: 取得失敗（③参照）` : ` — 字幕 ${draft.captions.cues.length} 行`) +
     (draft.chat.error ? ` / チャット: 取得失敗（③参照）` : ` / チャット ${draft.chat.messages.length} 件`);
-  $("start_sec").value = fmtTime(draft.clip.start_sec);
-  $("end_sec").value = fmtTime(draft.clip.end_sec);
-  updateLen();
-  renderMasks(); renderCues(); renderChat(); renderPreview();
+  range.set(draft.clip.start_sec, draft.clip.end_sec);
+  document.querySelector(`input[name=mode][value=${frame().mode}]`).checked = true;
+  renderChatOpts();
+  renderMasks(); renderCues(); renderChat(); renderLayout();
 }
 
 async function init() {
@@ -341,14 +470,21 @@ async function init() {
     return;
   }
   draft = d;
+  range = setupRangeControl($("start_sec"), $("end_sec"), $("len_sec"), showRange);
   renderAll();
   setupDrawing();
+  bindChatOpts();
 
-  $("start_sec").addEventListener("input", updateLen);
-  $("end_sec").addEventListener("input", updateLen);
-  $("fromnow").addEventListener("click", fromNow);
+  $("nowstart").addEventListener("click", () => nowInto("start"));
+  $("nowend").addEventListener("click", () => nowInto("end"));
   $("recap").addEventListener("click", recapture);
-  $("pvtime").addEventListener("input", renderPreview);
+  $("pvtime").addEventListener("input", () => { if (playing) setPlaying(false); renderPreview(); });
+  $("play").addEventListener("click", () => setPlaying(!playing));
+  document.addEventListener("keydown", ev => {
+    if (ev.code === "Space" && !/^(INPUT|TEXTAREA|BUTTON)$/.test(document.activeElement.tagName)) { ev.preventDefault(); setPlaying(!playing); }
+  });
+  document.querySelectorAll("input[name=mode]").forEach(el => el.addEventListener("change", () => setMode(el.value)));
+  window.addEventListener("resize", renderPreview);
 
   $("addcue").addEventListener("click", () => {
     const last = draft.captions.cues[draft.captions.cues.length - 1];
@@ -359,9 +495,11 @@ async function init() {
   $("save").addEventListener("click", async () => {
     const err = validate();
     if (err) { showError(err); return; }
-    const base = await saveClipFiles(draft.clip, draft.captions.cues, draft.chat.messages);
-    await chrome.storage.local.set({ draft });   // 保存後もこのタブで編集を続けられるように最新化
-    showOk(`保存しました → ダウンロード/clip-maker/${base}.*\n` +
+    const { savedCrop, ...fr } = frame();   // savedCrop は編集画面の都合（横に戻したとき枠位置を覚える）なので保存しない
+    const clip = { ...draft.clip, frame: fr };
+    const base = await saveClipFiles(clip, draft.captions.cues, draft.chat.messages);
+    await persist();   // 保存後もこのタブで編集を続けられるように最新化
+    showOk(`保存しました → ダウンロード/clip-maker/${base}.*（${isPortrait() ? "縦 1080×1920" : "横 1920×1080"}${chatOv().enabled ? "・チャット焼き込みあり" : ""}）\n` +
            `自動焼き付けが動いていれば、約1分で同じフォルダに ${base}.mp4（切り抜き動画）が出ます。\n` +
            `動いていない場合は PC で clipmaker watch を起動（または clipmaker render で1本ずつ）。`);
   });

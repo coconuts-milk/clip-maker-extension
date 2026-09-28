@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Clip Maker (Free)",
-  "version": "0.5.1",
-  "description": "YouTube から切り抜き範囲・チャット（配信アーカイブのチャットリプレイ）・字幕を吸い出し、編集画面で修正・矩形マスク指定して保存する（無料版・最大 30 秒）",
+  "version": "0.6.0",
+  "description": "YouTube から切り抜き範囲（最大 60 秒）・チャット（配信アーカイブのチャットリプレイ）・字幕を吸い出し、横／縦（Shorts）を選んで字幕・チャットの見え方をプレビューしながら編集・保存する（無料版）",
   "permissions": [
     "downloads",
     "activeTab",

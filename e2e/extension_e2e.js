@@ -58,7 +58,7 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       await new Promise(r => setTimeout(r, 4000));
     }
     console.log(JSON.stringify(result, null, 1).slice(0, 1500));
-    // 合格条件: 区間が 30 秒以内・字幕 1 件以上（実データ）・チャット 1 件以上（実データ・チャットリプレイ）
+    // 合格条件: 区間が上限（max_clip_sec=60）以内・字幕 1 件以上（実データ）・チャット 1 件以上（実データ・チャットリプレイ）
     const ok = result && result.clip && result.clip.video_id === VIDEO &&
                result.clip.end_sec - result.clip.start_sec <= result.clip.max_clip_sec &&
                result.captions && result.captions.cues && result.captions.cues.length > 0 &&
@@ -99,7 +99,7 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       set(cueMid);   // 1 本目の字幕が出ている時刻 → 字幕帯に本文が出るはず
       const cueband = document.getElementById("cueband").textContent.trim();
       set(Number(slider.max));   // 区間の末尾 → それまでのチャットが出るはず
-      const chatRows = document.querySelectorAll("#chatnow .cm").length;
+      const chatRows = document.querySelectorAll("#chatbox .cm").length;   // v0.6.0: 出来上がりプレビュー上のチャット枠
       set(0);   // 表示を先頭に戻しておく
       return { cueband, chatRows };
     }, cueMid);
@@ -112,6 +112,20 @@ const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 10;
       playBtns: document.querySelectorAll("#cues .playcue").length,
     }));
     console.log("ui v0.5.1:", JSON.stringify(ui051));
+    // v0.6.0（2026-09-28 指示）: 開始・終了・長さの 3 欄 + 両方に ▶ 今の位置、横/縦切替、プレビュー再生ボタン、チャット枠
+    const ui060 = await editor.evaluate(() => {
+      const $ = id => document.getElementById(id);
+      const len0 = $("len_sec").value;
+      $("len_sec").value = "10"; $("len_sec").dispatchEvent(new Event("input"));   // 長さを変えると終了が追随
+      const endAfterLen = $("end_sec").value;
+      $("len_sec").value = len0; $("len_sec").dispatchEvent(new Event("input"));
+      document.querySelector("input[name=mode][value=portrait]").click();
+      const portrait = $("out").className === "portrait" && getComputedStyle($("cropbox")).display !== "none";
+      document.querySelector("input[name=mode][value=landscape]").click();
+      return { nowstart: !!$("nowstart"), nowend: !!$("nowend"), endAfterLen, play: !!$("play"), portrait,
+               chatOpts: !!$("chat_on"), rangeview: $("rangeview").textContent };
+    });
+    console.log("ui v0.6.0:", JSON.stringify(ui060));
     // 右上にマスクを 1 個ドラッグで描く（スパチャ名エリア相当・描画モード切替は廃止＝常時ドラッグ可）
     const box = await (await editor.$("#overlay")).boundingBox();
     await editor.mouse.move(box.x + box.width * 0.70, box.y + box.height * 0.05);

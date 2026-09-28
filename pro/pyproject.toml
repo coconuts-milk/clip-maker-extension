@@ -1,7 +1,7 @@
 [project]
 name = "clipmaker"
-version = "0.1.0"
-description = "YouTube 切り抜き PC プロ版（clip.json + srt → 字幕焼き込み mp4）"
+version = "0.2.0"
+description = "YouTube 切り抜き PC プロ版（clip.json + srt + chat.json → 字幕・チャット焼き込み mp4。横／縦 Shorts）"
 requires-python = ">=3.10"
 dependencies = ["yt-dlp>=2024.1.1"]
 
