@@ -1,3 +1,9 @@
-// 無料版の service worker は常駐処理をしない（拡張審査: 最小権限）。
-// インストール時のログだけ出す（E2E が拡張 ID を取るための起動点にもなる）。
-chrome.runtime.onInstalled.addListener(() => console.log("[clip-maker] installed"));
+// 拡張アイコンを押したらサイドパネル（panel.html）を開く。
+// ふつうのポップアップはページ側をクリックすると閉じるため、動画を操作しながら時間を決める用途に合わない。
+function enablePanel() {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+    .catch(e => console.error("[clip-maker] サイドパネルを設定できません", e));
+}
+chrome.runtime.onInstalled.addListener(() => { console.log("[clip-maker] installed"); enablePanel(); });
+chrome.runtime.onStartup.addListener(enablePanel);
+enablePanel();

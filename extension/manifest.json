@@ -1,20 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Clip Maker",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "YouTube の好きな場面（最大 60 秒）を、字幕・チャット・隠し四角つきの切り抜き動画にする。横／縦（Shorts）対応。拡張機能だけで動画ファイルまで作れる",
   "permissions": [
     "downloads",
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://m.youtube.com/*"
   ],
   "action": {
-    "default_popup": "popup.html",
     "default_title": "Clip Maker",
     "default_icon": {
       "16": "icons/16.png",
@@ -53,5 +53,9 @@
     "16": "icons/16.png",
     "48": "icons/48.png",
     "128": "icons/128.png"
-  }
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "minimum_chrome_version": "116"
 }

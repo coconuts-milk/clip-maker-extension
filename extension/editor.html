@@ -1,141 +1,164 @@
 <!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
 <title>Clip Maker 編集画面</title>
+<link rel="stylesheet" href="ui.css">
 <style>
-  body { font: 14px system-ui, sans-serif; color: #222; background: #f6f6f4; margin: 0; }
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  h2 { font-size: 15px; margin: 0 0 8px; }
-  h3 { font-size: 13px; margin: 0 0 6px; color: #444; }
-  .sub { color: #666; font-size: 12px; margin-bottom: 8px; }
-  .steps { background: #eef4fb; border-left: 4px solid #1d5fa3; padding: 8px 12px; border-radius: 0 4px 4px 0; margin-bottom: 12px; font-size: 13px; }
-  section { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 12px; }
-  table { width: 100%; border-collapse: collapse; }
-  td, th { padding: 3px 4px; text-align: left; vertical-align: top; font-weight: normal; }
-  th { color: #666; font-size: 12px; }
-  input[type=number] { width: 72px; }
-  input[type=text], textarea { width: 100%; box-sizing: border-box; }
-  input[type=text].time { width: 110px; font-size: 16px; text-align: center; font-variant-numeric: tabular-nums; }
-  input[type=number].len { width: 70px; font-size: 16px; text-align: center; }
-  button { padding: 5px 10px; }
-  .del { color: #b00; background: none; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; }
-  .row-add { margin-top: 6px; }
-  /* ① 範囲 */
-  .rangegrid { display: grid; grid-template-columns: auto auto auto; gap: 6px 14px; align-items: center; }
-  .rangegrid label { font-size: 12px; color: #555; }
-  .now { font-weight: 400; white-space: nowrap; }
-  #rangeview { font-size: 15px; margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
-  #rangeview.bad { color: #b00; }
-  .rangebtns { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  #recap { background: #1d5fa3; color: #fff; border: none; border-radius: 4px; font-weight: 600; }
-  #capmsg { white-space: pre-wrap; color: #b00; margin-top: 6px; font-size: 13px; }
-  #capmsg.ok { color: #080; }
-  #capmsg.busy { color: #555; }
-  /* ② プレビュー */
-  .modebar { display: flex; gap: 14px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-  .modebar label { cursor: pointer; }
-  #pvrow { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
-  #srcwrap { flex: 1 1 420px; min-width: 300px; }
-  #outwrap { flex: 0 0 auto; }
-  #stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; }
-  #frame { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #overlay { position: absolute; inset: 0; cursor: crosshair; }
-  .maskbox { position: absolute; background: rgba(0,0,0,.75); border: 2px solid #e33; box-sizing: border-box; pointer-events: none; }
-  #cropbox { position: absolute; top: 0; height: 100%; border: 3px solid #ffd400; box-sizing: border-box; cursor: grab;
-             box-shadow: 0 0 0 9999px rgba(0,0,0,.55); display: none; }
-  #cropbox span { position: absolute; left: 0; right: 0; top: 45%; text-align: center; color: #ffd400; font-weight: 700; font-size: 12px; text-shadow: 0 0 3px #000; }
+  body { background: #f3f3f1; }
+  main { max-width: 1500px; margin: 0 auto; padding: 16px 20px 40px; }
+  h1 { font-size: 22px; margin: 0; }
+  h1 span { font-size: 14px; color: var(--sub); font-weight: 400; }
+  #clipinfo { font-size: 16px; color: var(--sub); margin: 2px 0 14px; }
+  h2 { font-size: 19px; margin: 0 0 10px; }
+  section { background: #fff; border: 1px solid #d8d8d8; border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .cols { display: grid; grid-template-columns: 500px 1fr; gap: 14px; align-items: start; }
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 1000px) { .cols, .cols2 { grid-template-columns: 1fr; } }
+
+  #recap { margin-top: 12px; width: 100%; }
+
+  .opt { display: grid; grid-template-columns: 120px 1fr 64px; gap: 8px 10px; align-items: center; margin-top: 8px; }
+  .opt input[type=range] { width: 100%; }
+  .opt .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--sub); }
+  .choice { display: flex; gap: 8px; flex-wrap: wrap; }
+  .choice label { border: 1px solid #999; border-radius: 6px; padding: 6px 14px; cursor: pointer; background: #fff; }
+  .choice input { position: absolute; opacity: 0; pointer-events: none; }
+  .choice label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+  .check input { width: 20px; height: 20px; }
+  .hidden { display: none !important; }
+
+  /* プレビュー */
+  #stagewrap { display: flex; justify-content: center; background: #222; border-radius: 6px; padding: 8px; }
+  #stage { position: relative; overflow: hidden; background: #000; touch-action: none; user-select: none; }
+  #stage.landscape { width: 100%; aspect-ratio: 16 / 9; }
+  #stage.portrait { height: min(74vh, 800px); aspect-ratio: 9 / 16; }
+  #pv { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #ov { position: absolute; inset: 0; cursor: crosshair; }
+  .mask { position: absolute; border: 2px solid #ff4d4d; box-sizing: border-box; cursor: move; }
+  .mask.sel { border-color: #ffd400; box-shadow: 0 0 0 1px #000; }
+  .mask .h { position: absolute; width: 16px; height: 16px; background: #ffd400; border: 2px solid #000; border-radius: 3px; display: none; }
+  .mask.sel .h { display: block; }
+  .mask .h.nw { left: -9px; top: -9px; cursor: nwse-resize; }
+  .mask .h.ne { right: -9px; top: -9px; cursor: nesw-resize; }
+  .mask .h.sw { left: -9px; bottom: -9px; cursor: nesw-resize; }
+  .mask .h.se { right: -9px; bottom: -9px; cursor: nwse-resize; }
+  .mask .x { position: absolute; left: 50%; top: 50%; margin: -15px 0 0 -15px; width: 30px; height: 30px; border-radius: 15px; background: #b00020; color: #fff;
+             font-weight: 700; font-size: 17px; line-height: 26px; text-align: center; border: 2px solid #fff; cursor: pointer; display: none; padding: 0; }
+  .mask.sel .x { display: block; }
+  .mask.tmp { border-style: dashed; pointer-events: none; }
   #stagemsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 16px; text-align: center; pointer-events: none; }
-  /* 出力プレビュー（横 16:9 または 縦 9:16）。字幕・チャットは焼き付けと同じ配置で重ねる */
-  #out { position: relative; background: #000; overflow: hidden; height: 360px; aspect-ratio: 16 / 9; }
-  #out.portrait { aspect-ratio: 9 / 16; height: 480px; }
-  #outimg { position: absolute; top: 0; height: 100%; }
-  .outmask { position: absolute; background: #000; }
-  #cueband { position: absolute; left: 4%; right: 4%; bottom: 7%; text-align: center; pointer-events: none; }
-  #cueband span { color: #fff; font-weight: 700; font-family: Meiryo, sans-serif; line-height: 1.25; word-break: break-all;
-    text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; }
-  #chatbox { position: absolute; cursor: grab; border: 1px dashed transparent; box-sizing: border-box; padding: 2px; }
-  #chatbox:hover { border-color: rgba(255,255,255,.6); }
-  #chatbox .ph { color: rgba(255,255,255,.55); font-size: 11px; }
-  #chatbox .cm { color: #fff; font-family: Meiryo, sans-serif; font-weight: 700; line-height: 1.3; margin-bottom: .25em;
-    text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; word-break: break-all; }
-  #chatbox .cm .amt { color: #ffd400; }
-  #outmsg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; padding: 12px; text-align: center; font-size: 12px; pointer-events: none; }
-  #timebar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
-  #play { width: 44px; font-size: 16px; }
-  #pvtime { flex: 1; }
-  #pvtimedisp { font-variant-numeric: tabular-nums; min-width: 190px; text-align: right; font-size: 13px; color: #444; }
-  .chatopts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; margin-top: 8px; }
-  .chatopts input[type=number] { width: 56px; }
-  .secmsg { white-space: pre-wrap; color: #b00; font-size: 13px; margin: 4px 0; }
-  #save { width: 100%; padding: 12px; font-weight: 700; font-size: 15px; }
-  #msg { white-space: pre-wrap; color: #b00; margin-top: 8px; }
-  #msg.ok { color: #080; }
-  #msg.busy { color: #555; }
-  .note { color: #666; font-size: 12px; }
+  #timebar { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+  #play { width: 56px; font-size: 20px; padding: 6px 0; }
+  #pvtime { flex: 1; height: 28px; }
+  #pvtimedisp { font-variant-numeric: tabular-nums; min-width: 150px; text-align: right; font-size: 17px; }
+  .hint { color: var(--sub); font-size: 15px; margin-top: 8px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 4px; text-align: left; vertical-align: middle; font-weight: normal; }
+  th { color: var(--sub); font-size: 14px; }
+  table input[type=number] { width: 86px; font-size: 16px; }
+  table input[type=text] { width: 100%; font-size: 17px; }
+  .del { color: var(--bad); }
+  .playcue { padding: 4px 10px; }
+  .amt { color: #a87400; font-weight: 700; }
+  #chatwrap { max-height: 420px; overflow-y: auto; }
+  #chat td { font-size: 16px; border-bottom: 1px dotted #ddd; }
+  #chat td:first-child { width: 70px; color: var(--sub); font-variant-numeric: tabular-nums; }
+  #masklist td { font-size: 15px; }
+  #masklist input { width: 76px; }
+  #masklist { margin-top: 10px; width: auto; }
+  #masklist td, #masklist th { padding-right: 18px; }
+
+  #save { width: 100%; font-size: 21px; padding: 16px; }
 </style></head><body>
 <main>
-  <h1>Clip Maker 編集画面 <span id="edver" class="note"></span></h1>
-  <div class="sub" id="clipinfo"></div>
-  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② 横/縦を選び、プレビューを再生して字幕・チャットの見え方を確認。隠したい所は元画面をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認）</b> → <b>④ 動画を作る</b></div>
+  <h1>Clip Maker 編集画面 <span id="edver"></span></h1>
+  <div id="clipinfo"></div>
 
-  <section>
-    <h2>① 切り抜き範囲 <span class="note">（最長 60 秒。開始・終了・長さのどれを変えても残りが追随）</span></h2>
-    <div class="rangegrid">
-      <label>開始</label><input id="start_sec" type="text" class="time"><button id="nowstart" class="now" title="YouTube タブの今の再生位置（停止中ならその時刻）を開始に入れる">▶ 今の位置を開始に</button>
-      <label>終了</label><input id="end_sec" type="text" class="time"><button id="nowend" class="now" title="YouTube タブの今の再生位置を終了に入れる">▶ 今の位置を終了に</button>
-      <label>長さ(秒)</label><input id="len_sec" type="number" class="len" min="1" max="60" step="0.1"><span class="note">「1:24:09」形式でも「5049」（秒）でも可</span>
-    </div>
-    <div id="rangeview"></div>
-    <div class="rangebtns">
-      <button id="recap" title="上の開始・終了の範囲で字幕・チャット・プレビューを取り直す">🔄 この範囲で吸い出し直す</button>
-      <span class="note">範囲を変えたら押す（字幕・チャット・コマ画像が新しい範囲になる）</span>
-    </div>
-    <div id="capmsg"></div>
-  </section>
+  <div class="cols">
+    <div>
+      <section>
+        <h2>① 切り抜く時間</h2>
+        <div class="range">
+          <div class="times">
+            <div class="tcol"><div class="cap">開始</div><div id="start_sec"></div></div>
+            <div class="tilde">〜</div>
+            <div class="tcol"><div class="cap">終了</div><div id="end_sec"></div></div>
+          </div>
+          <div class="under">
+            <button id="nowstart">今時間取得</button>
+            <div class="lenbox">長さ <input id="len_sec" type="number" min="0.1" max="60" step="0.1"> 秒</div>
+            <button id="nowend">今時間取得</button>
+          </div>
+        </div>
+        <button id="recap">この時間で取り直す</button>
+        <div id="capmsg" class="msg"></div>
+      </section>
 
-  <section>
-    <h2>② プレビュー</h2>
-    <div class="modebar">
-      出力: <label><input type="radio" name="mode" value="landscape" checked> 横（16:9・1920×1080）</label>
-      <label><input type="radio" name="mode" value="portrait"> 縦（Shorts・9:16・1080×1920）</label>
-      <span class="note" id="modenote"></span>
-    </div>
-    <div id="pvrow">
-      <div id="srcwrap">
-        <h3>元画面 — 隠したい所をドラッグで四角に。縦のときは黄色い枠をドラッグして切り出す位置を決める</h3>
-        <div id="stage"><img id="frame" alt=""><div id="overlay"><div id="cropbox"><span>◀ ▶</span></div></div><div id="stagemsg"></div></div>
-        <table id="masks"><thead><tr><th>x</th><th>y</th><th>幅</th><th>高さ</th><th>表示開始(秒)</th><th>表示終了(空=最後まで)</th><th></th></tr></thead><tbody></tbody></table>
-      </div>
-      <div id="outwrap">
-        <h3>出来上がり — 再生すると時間どおりに字幕・チャットが出る（チャット枠はドラッグで移動）</h3>
-        <div id="out"><img id="outimg" alt=""><div id="outmasks"></div><div id="cueband"></div><div id="chatbox"></div><div id="outmsg"></div></div>
-      </div>
-    </div>
-    <div id="timebar"><button id="play" title="プレビューを再生／停止（スペースキー）">▶</button><input id="pvtime" type="range" min="0" max="15" step="0.1" value="0"><span id="pvtimedisp"></span></div>
-    <div class="chatopts">
-      <label><input type="checkbox" id="chat_on"> チャットを動画に乗せる</label>
-      <label>同時に最大 <input type="number" id="chat_max" min="1" max="12" step="1"> 件</label>
-      <label>表示秒数 <input type="number" id="chat_show" min="0" max="60" step="1"> 秒（0=消さない）</label>
-      <label>枠の幅 <input type="number" id="chat_w" min="10" max="100" step="1"> %</label>
-      <label>文字の大きさ <input type="number" id="chat_font" min="1" max="8" step="0.2"> %（画面の短辺に対して）</label>
-    </div>
-  </section>
+      <section>
+        <h2>画面の形</h2>
+        <div class="choice">
+          <label><input type="radio" name="mode" value="landscape"> 横</label>
+          <label><input type="radio" name="mode" value="portrait"> 縦（ショート）</label>
+        </div>
+        <div id="portraitopts">
+          <div class="opt"><span>動画の大きさ</span><input id="zoom" type="range" min="0.5" max="3.16" step="0.01"><span class="val" id="zoomv"></span></div>
+          <div class="opt"><span>左右の位置</span><input id="pan" type="range" min="0" max="100" step="1"><span class="val" id="panv"></span></div>
+          <div class="opt"><span>上下の位置</span>
+            <div class="choice">
+              <label><input type="radio" name="valign" value="top"> 上</label>
+              <label><input type="radio" name="valign" value="center"> 中央</label>
+              <label><input type="radio" name="valign" value="bottom"> 下</label>
+            </div><span></span></div>
+        </div>
+      </section>
 
-  <section>
-    <h2>③ 字幕 <span class="note">（時刻は切り抜き開始からの秒。▶ で YouTube タブがその位置を再生する＝音声を聞きながら直せる）</span></h2>
-    <div class="secmsg" id="cuesmsg"></div>
-    <table id="cues"><thead><tr><th></th><th>開始(秒)</th><th>終了(秒)</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
-    <button class="row-add" id="addcue">字幕を追加</button>
-  </section>
+      <section>
+        <h2>字幕</h2>
+        <div class="opt"><span>高さ</span><input id="cap_bottom" type="range" min="1" max="95" step="1"><span class="val" id="cap_bottomv"></span></div>
+        <div class="opt"><span>文字の大きさ</span><input id="cap_font" type="range" min="3" max="12" step="0.1"><span class="val" id="cap_fontv"></span></div>
+      </section>
 
-  <section>
-    <h2>チャット <span class="note">（表示のみ・編集不要。時刻は切り抜き開始からの秒。スパチャは金額付き）</span></h2>
-    <div class="secmsg" id="chatmsg"></div>
-    <table id="chat"><thead><tr><th>時刻(秒)</th><th>内容</th></tr></thead><tbody></tbody></table>
-  </section>
+      <section>
+        <h2>コメント</h2>
+        <label class="check"><input type="checkbox" id="chat_on"> コメントを右から左に流す</label>
+        <div id="chatopts">
+          <div class="opt"><span>濃さ</span><input id="chat_opacity" type="range" min="0.2" max="1" step="0.05"><span class="val" id="chat_opacityv"></span></div>
+          <div class="opt"><span>文字の大きさ</span><input id="chat_font" type="range" min="2" max="9" step="0.1"><span class="val" id="chat_fontv"></span></div>
+          <div class="opt"><span>高さ</span><input id="chat_top" type="range" min="0" max="90" step="1"><span class="val" id="chat_topv"></span></div>
+          <div class="opt"><span>行の数</span><input id="chat_lanes" type="range" min="1" max="10" step="1"><span class="val" id="chat_lanesv"></span></div>
+          <div class="opt"><span>流れる時間</span><input id="chat_cross" type="range" min="3" max="12" step="0.5"><span class="val" id="chat_crossv"></span></div>
+        </div>
+      </section>
+    </div>
 
-  <button id="save">④ 動画を作る（切り抜きの長さぶん録画して、ダウンロードフォルダに動画ファイルを保存）</button>
-  <div id="msg"></div>
+    <div>
+      <section>
+        <h2>② 出来上がり</h2>
+        <div id="stagewrap"><div id="stage" class="landscape"><canvas id="pv"></canvas><div id="ov"></div><div id="stagemsg"></div></div></div>
+        <div id="timebar"><button id="play" title="再生／停止（スペースキー）">▶</button><input id="pvtime" type="range" min="0" max="15" step="0.1" value="0"><span id="pvtimedisp"></span></div>
+        <div class="hint">隠したい所は画面の上をドラッグ。四角はいくつでも作れます。作った四角は、掴んで移動・角を掴んで大きさ変更・× で削除。</div>
+        <table id="masklist" class="hidden"><thead><tr><th>隠す四角</th><th>出す時間（秒）</th><th>消す時間（空＝最後まで）</th><th></th></tr></thead><tbody></tbody></table>
+      </section>
+    </div>
+  </div>
+
+  <div class="cols2">
+    <section>
+      <h2>③ 字幕の文</h2>
+      <div class="msg bad" id="cuesmsg"></div>
+      <table id="cues"><thead><tr><th></th><th>開始（秒）</th><th>終了（秒）</th><th>文</th><th></th></tr></thead><tbody></tbody></table>
+      <button id="addcue" style="margin-top:8px">字幕を追加</button>
+    </section>
+    <section>
+      <h2>コメント一覧</h2>
+      <div class="msg bad" id="chatmsg"></div>
+      <div id="chatwrap"><table id="chat"><tbody></tbody></table></div>
+    </section>
+  </div>
+
+  <button id="save" class="primary">動画を作る（動画タブに移動します）</button>
+  <div id="msg" class="msg"></div>
 </main>
 <script src="common.js"></script>
 <script src="editor.js"></script>

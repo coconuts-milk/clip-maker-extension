@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 e2e/node_modules/
 e2e/out/
+e2e/shots/

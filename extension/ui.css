@@ -1,0 +1,31 @@
+/* パネルと編集画面で共通の見た目。文字は大きめ（本文 16px・操作部品 18px 以上）。 */
+:root { --ink: #1c1c1c; --sub: #555; --line: #cfcfcf; --accent: #1d5fa3; --bad: #b00020; --ok: #0a7a2f; }
+* { box-sizing: border-box; }
+body { font: 16px/1.5 Meiryo, "Yu Gothic UI", system-ui, sans-serif; color: var(--ink); margin: 0; }
+button { font: inherit; font-size: 16px; padding: 8px 14px; border: 1px solid #999; border-radius: 6px; background: #fff; color: var(--ink); cursor: pointer; }
+button:hover { background: #f0f4f9; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; font-size: 18px; padding: 12px 16px; }
+button.primary:hover { background: #174d85; }
+input[type=number], input[type=text] { font: inherit; font-size: 18px; padding: 6px 8px; border: 1px solid #999; border-radius: 6px; }
+label { font-size: 16px; }
+
+/* 時間入力 □:□:□.□ */
+.timeinput { display: inline-flex; align-items: center; gap: 2px; font-variant-numeric: tabular-nums; }
+.timeinput .tbox { width: 44px; text-align: center; font-size: 22px; font-weight: 700; padding: 6px 0; }
+.timeinput .tbox.td { width: 30px; }
+.timeinput .tsep { font-size: 22px; font-weight: 700; color: var(--sub); }
+
+/* 開始・終了を横に並べ、その下に「今時間取得」「長さ」「今時間取得」 */
+.range .times { display: flex; justify-content: space-between; align-items: flex-end; gap: 6px; }
+.range .tcol { text-align: center; }
+.range .under { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 10px; }
+.range .cap { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+.range .lenbox { display: flex; align-items: center; gap: 6px; font-size: 16px; white-space: nowrap; }
+.range .lenbox input { width: 84px; text-align: center; font-size: 20px; font-weight: 700; }
+.range .tilde { font-size: 22px; color: var(--sub); padding-bottom: 8px; }
+
+.msg { white-space: pre-wrap; font-size: 16px; margin-top: 10px; min-height: 1.5em; }
+.msg.bad { color: var(--bad); }
+.msg.ok { color: var(--ok); }
+.msg.busy { color: var(--sub); }
