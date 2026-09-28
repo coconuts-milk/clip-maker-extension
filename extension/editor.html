@@ -53,7 +53,9 @@
   #cueband { position: absolute; left: 4%; right: 4%; bottom: 7%; text-align: center; pointer-events: none; }
   #cueband span { color: #fff; font-weight: 700; font-family: Meiryo, sans-serif; line-height: 1.25; word-break: break-all;
     text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 -2px 0 #000, 0 2px 0 #000, -2px 0 0 #000, 2px 0 0 #000; }
-  #chatbox { position: absolute; cursor: grab; border: 1px dashed rgba(255,255,255,.35); box-sizing: border-box; padding: 2px; }
+  #chatbox { position: absolute; cursor: grab; border: 1px dashed transparent; box-sizing: border-box; padding: 2px; }
+  #chatbox:hover { border-color: rgba(255,255,255,.6); }
+  #chatbox .ph { color: rgba(255,255,255,.55); font-size: 11px; }
   #chatbox .cm { color: #fff; font-family: Meiryo, sans-serif; font-weight: 700; line-height: 1.3; margin-bottom: .25em;
     text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000; word-break: break-all; }
   #chatbox .cm .amt { color: #ffd400; }
@@ -68,12 +70,13 @@
   #save { width: 100%; padding: 12px; font-weight: 700; font-size: 15px; }
   #msg { white-space: pre-wrap; color: #b00; margin-top: 8px; }
   #msg.ok { color: #080; }
+  #msg.busy { color: #555; }
   .note { color: #666; font-size: 12px; }
 </style></head><body>
 <main>
   <h1>Clip Maker 編集画面 <span id="edver" class="note"></span></h1>
   <div class="sub" id="clipinfo"></div>
-  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② 横/縦を選び、プレビューを再生して字幕・チャットの見え方を確認。隠したい所は元画面をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認）</b> → <b>④ 保存</b></div>
+  <div class="steps">手順: <b>① 範囲を決めて吸い出し</b> → <b>② 横/縦を選び、プレビューを再生して字幕・チャットの見え方を確認。隠したい所は元画面をドラッグ</b> → <b>③ 字幕を直す（▶で音声確認）</b> → <b>④ 動画を作る</b></div>
 
   <section>
     <h2>① 切り抜き範囲 <span class="note">（最長 60 秒。開始・終了・長さのどれを変えても残りが追随）</span></h2>
@@ -131,7 +134,7 @@
     <table id="chat"><thead><tr><th>時刻(秒)</th><th>内容</th></tr></thead><tbody></tbody></table>
   </section>
 
-  <button id="save">④ 3 ファイルを保存（自動焼き付けが動いていれば約1分で mp4）</button>
+  <button id="save">④ 動画を作る（切り抜きの長さぶん録画して、ダウンロードフォルダに動画ファイルを保存）</button>
   <div id="msg"></div>
 </main>
 <script src="common.js"></script>

@@ -316,7 +316,15 @@ function renderPreview() {
   box.style.display = o.enabled ? "block" : "none";
   box.style.left = o.x_pct + "%"; box.style.top = o.y_pct + "%"; box.style.width = o.w_pct + "%";
   box.textContent = "";
-  for (const m of visibleChat(t)) {
+  const vis = visibleChat(t);
+  if (!vis.length) {
+    // この時刻に出るコメントが無い。位置だけ分かるよう薄い目印を出す（動画には入らない）
+    const ph = document.createElement("div");
+    ph.className = "ph";
+    ph.textContent = draft.chat.messages.length ? "コメント表示位置（この時刻は無し）" : "コメント表示位置（この範囲にコメント無し）";
+    box.appendChild(ph);
+  }
+  for (const m of vis) {
     const d = document.createElement("div");
     d.className = "cm";
     d.style.fontSize = (shortSide * o.font_pct / 100) + "px";
@@ -421,12 +429,12 @@ function setupDrawing() {
   window.addEventListener("mouseup", () => { if (boxDrag) { boxDrag = null; persist(); } });
 }
 
-// ---- 保存（検証してから 3 ファイル） ----
+// ---- 動画を作る前の検証 ----
 function validate() {
   let r;
   try { r = range.read(); } catch (e) { return String(e); }
   if (Math.abs(r.start - draft.clip.start_sec) > 0.5 || Math.abs(r.end - draft.clip.end_sec) > 0.5) {
-    return "範囲を変えた後は ①の「🔄 この範囲で吸い出し直す」を押してから保存してください（字幕・チャットが古い範囲のままです）";
+    return "範囲を変えた後は ①の「🔄 この範囲で吸い出し直す」を押してから動画を作ってください（字幕・チャットが古い範囲のままです）";
   }
   for (let i = 0; i < draft.captions.cues.length; i++) {
     const c = draft.captions.cues[i];
@@ -492,17 +500,70 @@ async function init() {
     renderCues(); renderPreview();
   });
 
-  $("save").addEventListener("click", async () => {
-    const err = validate();
-    if (err) { showError(err); return; }
-    const { savedCrop, ...fr } = frame();   // savedCrop は編集画面の都合（横に戻したとき枠位置を覚える）なので保存しない
-    const clip = { ...draft.clip, frame: fr };
-    const base = await saveClipFiles(clip, draft.captions.cues, draft.chat.messages);
-    await persist();   // 保存後もこのタブで編集を続けられるように最新化
-    showOk(`保存しました → ダウンロード/clip-maker/${base}.*（${isPortrait() ? "縦 1080×1920" : "横 1920×1080"}${chatOv().enabled ? "・チャット焼き込みあり" : ""}）\n` +
-           `自動焼き付けが動いていれば、約1分で同じフォルダに ${base}.mp4（切り抜き動画）が出ます。\n` +
-           `動いていない場合は PC で clipmaker watch を起動（または clipmaker render で1本ずつ）。`);
-  });
+  $("save").addEventListener("click", makeVideo);
+}
+
+const CHUNK_BYTES = 4 * 1024 * 1024;   // 1 メッセージで運ぶ録画データの大きさ（base64 で約 5.4MB。メッセージ上限 64MB に対して十分小さい）
+
+// YouTube タブが持っている録画データを分割で受け取り、拡張のダウンロード機能で ダウンロード/clip-maker/ に保存する。
+async function saveRecording(tabId, r) {
+  const parts = [];
+  for (let off = 0; off < r.size; off += CHUNK_BYTES) {
+    const c = assertVer(await messageWithInject(tabId, { type: "CLIP_GET_CHUNK", id: r.id, offset: off, length: CHUNK_BYTES }));
+    const bin = atob(c.b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    parts.push(u8);
+  }
+  const blob = new Blob(parts, { type: r.mime });
+  if (blob.size !== r.size) throw `録画データの受け渡しでサイズが合いません（${blob.size} / ${r.size}）`;
+  const url = URL.createObjectURL(blob);
+  try {
+    const id = await chrome.downloads.download({ url, filename: "clip-maker/" + r.file, saveAs: false, conflictAction: "uniquify" });
+    // 完了まで待つ（完了前に URL を破棄すると保存が途中で切れる）
+    for (let i = 0; i < 300; i++) {
+      const [it] = await chrome.downloads.search({ id });
+      if (it && it.state === "complete") { r.file = it.filename.split(/[\\/]/).pop(); return; }
+      if (it && it.state === "interrupted") throw `保存に失敗しました（${it.error || "原因不明"}）`;
+      await new Promise(res => setTimeout(res, 200));
+    }
+    throw "保存が時間内に終わりませんでした";
+  } finally {
+    URL.revokeObjectURL(url);
+    messageWithInject(tabId, { type: "CLIP_RELEASE", id: r.id }).catch(() => {});
+  }
+}
+
+// ④ 動画を作る: YouTube タブを前面に出して実時間で録画し、終わったら編集画面に戻る（拡張だけで完結）。
+// 録画中は YouTube タブが見えている必要がある（隠れたタブは描画が止まり、映像が固まるため）。
+async function makeVideo() {
+  const err = validate();
+  if (err) { showError(err); return; }
+  const btn = $("save");
+  const { savedCrop, ...fr } = frame();   // savedCrop は編集画面の都合（横に戻したとき枠位置を覚える）なので渡さない
+  const clip = { ...draft.clip, frame: fr };
+  const sec = clip.end_sec - clip.start_sec;
+  let tab, me;
+  try { tab = await ytTab(); me = await chrome.tabs.getCurrent(); } catch (e) { showError(String(e)); return; }
+  btn.disabled = true;
+  await persist();
+  const m = $("msg"); m.className = "busy";
+  m.textContent = `録画中…（約 ${Math.ceil(sec) + 3} 秒）YouTube のタブが前に出ます。終わるまでタブを切り替えず、そのまま待ってください。`;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    await chrome.windows.update(tab.windowId, { focused: true });
+    const r = assertVer(await messageWithInject(tab.id, { type: "CLIP_RENDER", clip, cues: draft.captions.cues, chat: draft.chat.messages }));
+    if (me) await chrome.tabs.update(me.id, { active: true });   // 録画は終わったので編集画面に戻す
+    m.textContent = "録画できました。保存中…";
+    await saveRecording(tab.id, r);
+    showOk(`動画ができました → ダウンロード/clip-maker/${r.file}（${r.sec} 秒・${r.mb} MB・${isPortrait() ? "縦 1080×1920" : "横 1920×1080"}）` +
+           (r.ext === "webm" ? "\nこのブラウザは mp4 で録画できないため webm 形式になっています。" : ""));
+  } catch (e) {
+    showError(String(e));
+  } finally {
+    btn.disabled = false;
+    if (me) { try { await chrome.tabs.update(me.id, { active: true }); } catch (_) { /* 編集タブが閉じられていた */ } }
+  }
 }
 
 init();

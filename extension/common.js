@@ -34,17 +34,6 @@ function fmtTime(sec) {
   return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m)) + ":" + rs;
 }
 
-function srtTime(sec) {
-  const ms = Math.round(sec * 1000);
-  const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000),
-        s = Math.floor(ms % 60000 / 1000), f = ms % 1000;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(f).padStart(3, "0")}`;
-}
-
-function toSrt(cues) {
-  return cues.map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`).join("\n");
-}
-
 // ---- 開始・終了・長さの 3 欄連動（popup と editor の両方で使う。②③） ----
 // ルール: 最後に触った 2 つから残り 1 つを計算する。
 //   長さを触った → 終了 = 開始 + 長さ　　終了を触った → 長さ = 終了 − 開始
@@ -127,18 +116,4 @@ function assertVer(r) {
   if (r.error) throw r.error;
   if (r.ver !== chrome.runtime.getManifest().version) throw verErrorMsg(r.ver);
   return r;
-}
-
-function download(name, text, mime) {
-  const url = "data:" + mime + ";charset=utf-8," + encodeURIComponent(text);
-  return chrome.downloads.download({ url, filename: "clip-maker/" + name, saveAs: false });
-}
-
-// 3 ファイル保存（clip.json / srt / chat.json）。呼び側で draft の検証を済ませてから呼ぶ。
-async function saveClipFiles(clip, cues, chat) {
-  const base = `${clip.video_id}_${Math.floor(clip.start_sec)}`;
-  await download(`${base}.clip.json`, JSON.stringify(clip, null, 2), "application/json");
-  await download(`${base}.srt`, toSrt(cues), "application/x-subrip");   // text/plain だと Chrome が .txt に改名する（E2E で実測）
-  await download(`${base}.chat.json`, JSON.stringify(chat, null, 2), "application/json");
-  return base;
 }

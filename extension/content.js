@@ -213,7 +213,213 @@ async function captureFrames(v, start, end) {
   }
 }
 
+// ---- 動画を作る（拡張だけで完結） ----
+// 再生中の <video> を canvas に描き、その上にマスク・字幕・チャットを重ねて MediaRecorder で録画する。
+// 実時間で再生しながら録るので、60 秒の切り抜きは 60 秒かかる。音声は <video> の captureStream から取る。
+// 見た目は編集画面の「出来上がり」プレビューと同じ規則（文字サイズは短辺基準・チャットは新しい順に max 件）。
+
+const REC_FPS = 30;
+const REC_VIDEO_BPS = 8000000;   // 1080p30 の H.264 で破綻しない実用値
+const REC_AUDIO_BPS = 192000;
+const REC_CAPTION_FONT_PCT = 6.9, REC_CAPTION_OUTLINE_PCT = 0.7, REC_CAPTION_MARGIN_V_PCT = 7, REC_CAPTION_MARGIN_H_PCT = 4;
+const REC_CHAT_OUTLINE_PCT = 0.35, REC_CHAT_LINE_GAP = 0.3, REC_LINE_HEIGHT = 1.25;
+const REC_FONT = "Meiryo, 'Yu Gothic', sans-serif";
+// mp4 を優先。録れない環境だけ webm（拡張子も webm にして、黙って別形式を mp4 と偽らない）
+const REC_MIMES = ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4",
+                   "video/webm;codecs=h264,opus", "video/webm;codecs=vp9,opus", "video/webm"];
+
+function wrapByWidth(ctx, text, maxW) {
+  const out = [];
+  for (const line of String(text).split("\n")) {
+    let cur = "";
+    for (const ch of line) {
+      if (cur && ctx.measureText(cur + ch).width > maxW) {
+        // 英単語の途中では切らない: 半角文字の連続の途中なら直前の空白まで戻って折り返す（日本語はどこでも折り返す）
+        const sp = cur.lastIndexOf(" ");
+        const midWord = ch !== " " && ch.charCodeAt(0) < 0x3000 && cur.charCodeAt(cur.length - 1) < 0x3000 && !cur.endsWith(" ");
+        if (midWord && sp > 0) { out.push(cur.slice(0, sp)); cur = cur.slice(sp + 1); }
+        else { out.push(cur); cur = ""; }
+      }
+      if (cur === "" && ch === " ") continue;   // 行頭の空白は捨てる
+      cur += ch;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+function drawOutlined(ctx, text, x, y, outline, fill) {
+  ctx.lineJoin = "round";
+  ctx.lineWidth = outline * 2;
+  ctx.strokeStyle = "#000";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = fill || "#fff";
+  ctx.fillText(text, x, y);
+}
+
+// 1 コマ描く。t は切り抜き開始からの秒。
+function drawClipFrame(ctx, v, W, H, clip, cues, chat, t) {
+  const portrait = clip.frame && clip.frame.mode === "portrait";
+  const crop = portrait ? clip.frame.crop : { x: 0, y: 0, w: VIDEO_W, h: VIDEO_H };
+  const sx = v.videoWidth / VIDEO_W, sy = v.videoHeight / VIDEO_H;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(v, crop.x * sx, crop.y * sy, crop.w * sx, crop.h * sy, 0, 0, W, H);
+
+  // 隠す四角（元画面 1920×1080 基準の座標 → 出力座標）
+  const dur = clip.end_sec - clip.start_sec;
+  ctx.fillStyle = "#000";
+  for (const m of (clip.masks || [])) {
+    const mEnd = m.end === null || m.end === undefined ? dur : m.end;
+    if (t < (m.start || 0) || t > mEnd) continue;
+    ctx.fillRect((m.x - crop.x) / crop.w * W, (m.y - crop.y) / crop.h * H, m.w / crop.w * W, m.h / crop.h * H);
+  }
+
+  const short = Math.min(W, H);
+
+  // 字幕（下中央・白文字黒縁）
+  const capSize = short * REC_CAPTION_FONT_PCT / 100;
+  ctx.font = `700 ${capSize}px ${REC_FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  const capLines = [];
+  for (const c of cues) {
+    if (c.start <= t && t <= c.end && c.text.trim()) capLines.push(...wrapByWidth(ctx, c.text, W * (1 - 2 * REC_CAPTION_MARGIN_H_PCT / 100)));
+  }
+  let y = H * (1 - REC_CAPTION_MARGIN_V_PCT / 100) - (capLines.length - 1) * capSize * REC_LINE_HEIGHT;
+  for (const line of capLines) {
+    drawOutlined(ctx, line, W / 2, y, short * REC_CAPTION_OUTLINE_PCT / 100);
+    y += capSize * REC_LINE_HEIGHT;
+  }
+
+  // チャット（指定枠・新しい順に max 件・show_sec で消える）
+  const o = clip.chat_overlay;
+  if (o && o.enabled) {
+    const size = short * o.font_pct / 100, boxW = W * o.w_pct / 100, x0 = W * o.x_pct / 100;
+    ctx.font = `700 ${size}px ${REC_FONT}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const outline = Math.max(1, short * REC_CHAT_OUTLINE_PCT / 100);
+    const vis = chat.filter(m => m.t <= t && (o.show_sec <= 0 || t - m.t < o.show_sec)).sort((a, b) => b.t - a.t).slice(0, o.max);
+    let cy = H * o.y_pct / 100;
+    for (const m of vis) {
+      const amt = m.amount ? `${m.amount} ` : "";
+      const lines = wrapByWidth(ctx, amt + m.text, boxW);
+      lines.forEach((line, i) => {
+        if (i === 0 && amt && line.startsWith(amt)) {
+          drawOutlined(ctx, amt, x0, cy, outline, "#ffd400");   // スパチャ金額は黄
+          drawOutlined(ctx, line.slice(amt.length), x0 + ctx.measureText(amt).width, cy, outline);
+        } else {
+          drawOutlined(ctx, line, x0, cy, outline);
+        }
+        cy += size * REC_LINE_HEIGHT;
+      });
+      cy += size * REC_CHAT_LINE_GAP;
+    }
+  }
+}
+
+let recording = false;
+let lastRecording = null;   // {id, blob}。編集画面が CLIP_GET_CHUNK で取りに来るまで保持する
+
+// Blob の一部を base64 で返す（メッセージは JSON なのでバイナリをそのまま送れない）
+function blobChunkBase64(blob, offset, length) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(",")[1] || "");
+    fr.onerror = () => reject(fr.error || new Error("録画データを読めませんでした"));
+    fr.readAsDataURL(blob.slice(offset, offset + length));
+  });
+}
+
+// 録画して Blob を保持する。返り値 {id, size, mime, file, ...}。保存は編集画面が拡張のダウンロード機能で行う
+// （ページ側の <a download> は 2 本目以降が Chrome の「複数ファイルのダウンロード」制限で止まる＝2026-09-28 実機で確認）。
+// 失敗はメッセージを throw。
+async function recordClip(v, clip, cues, chat) {
+  if (recording) throw new Error("いま別の録画が進行中です。終わってからもう一度押してください");
+  if (!v.videoWidth || !v.videoHeight) throw new Error("動画がまだ読み込まれていません。少し再生してからもう一度お試しください");
+  if (typeof v.captureStream !== "function" || typeof MediaRecorder === "undefined") throw new Error("このブラウザは録画に対応していません（Chrome / Edge の PC 版で使ってください）");
+  const mime = REC_MIMES.find(m => MediaRecorder.isTypeSupported(m));
+  if (!mime) throw new Error("このブラウザで録画できる動画形式がありません");
+  const portrait = clip.frame && clip.frame.mode === "portrait";
+  const W = portrait ? PORTRAIT_W : VIDEO_W, H = portrait ? PORTRAIT_H : VIDEO_H;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  const orig = { t: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume, rate: v.playbackRate };
+  recording = true;
+  let rec;
+  try {
+    v.pause();
+    v.playbackRate = 1;
+    v.muted = false;   // ミュートのままだと無音の動画になる
+    await seekTo(v, clip.start_sec);
+    drawClipFrame(ctx, v, W, H, clip, cues, chat, 0);
+
+    const audioTracks = v.captureStream().getAudioTracks();
+    const stream = new MediaStream([...canvas.captureStream(REC_FPS).getVideoTracks(), ...audioTracks]);
+    rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: REC_VIDEO_BPS, audioBitsPerSecond: REC_AUDIO_BPS });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((resolve, reject) => { rec.onstop = resolve; rec.onerror = e => reject(e.error || new Error("録画エラー")); });
+
+    rec.start(1000);
+    await v.play();
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now(), limit = (clip.end_sec - clip.start_sec) * 1000 * 3 + 15000;   // 読み込み待ちで止まっても永久に待たない
+      const loop = () => {
+        drawClipFrame(ctx, v, W, H, clip, cues, chat, Math.max(0, v.currentTime - clip.start_sec));
+        if (v.currentTime >= clip.end_sec || v.ended) { resolve(); return; }
+        if (Date.now() - t0 > limit) { reject(new Error("録画が時間内に終わりませんでした（動画の読み込みが止まっていないか確認してください）")); return; }
+        if (document.hidden) { reject(new Error("録画中に YouTube のタブが隠れました。録画中はこのタブを表示したままにしてください")); return; }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    });
+    v.pause();
+    rec.stop();
+    await stopped;
+
+    const blob = new Blob(chunks, { type: mime.split(";")[0] });
+    if (!blob.size) throw new Error("録画データが空でした");
+    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+    const file = `clip_${clip.video_id}_${Math.floor(clip.start_sec)}_${portrait ? "tate" : "yoko"}.${ext}`;
+    lastRecording = { id: String(Date.now()), blob };
+    return { id: lastRecording.id, size: blob.size, mime: blob.type, file, ext,
+             sec: +(clip.end_sec - clip.start_sec).toFixed(1), mb: +(blob.size / 1048576).toFixed(1) };
+  } finally {
+    if (rec && rec.state !== "inactive") { try { rec.stop(); } catch (_) { /* 既に停止 */ } }
+    v.pause();
+    v.muted = orig.muted; v.volume = orig.volume; v.playbackRate = orig.rate;
+    v.currentTime = orig.t;
+    if (!orig.paused) v.play().catch(() => {});
+    recording = false;
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === "CLIP_GET_CHUNK") {
+    if (!lastRecording || lastRecording.id !== msg.id) { sendResponse({ error: "録画データが見つかりません。もう一度「動画を作る」を押してください" }); return; }
+    blobChunkBase64(lastRecording.blob, msg.offset, msg.length)
+      .then(b64 => sendResponse({ ver: chrome.runtime.getManifest().version, b64 }))
+      .catch(e => sendResponse({ error: `録画データの受け渡しに失敗しました: ${e && e.message ? e.message : e}` }));
+    return true;
+  }
+  if (msg.type === "CLIP_RELEASE") {
+    if (lastRecording && lastRecording.id === msg.id) lastRecording = null;   // メモリ解放
+    sendResponse({ ver: chrome.runtime.getManifest().version, ok: true });
+    return;
+  }
+  if (msg.type === "CLIP_RENDER") {
+    (async () => {
+      const v = document.querySelector("video");
+      if (!v || videoId() !== msg.clip.video_id) { sendResponse({ error: "切り抜き元の動画を開いている YouTube タブで実行してください" }); return; }
+      const r = await recordClip(v, msg.clip, msg.cues || [], msg.chat || []);
+      sendResponse({ ver: chrome.runtime.getManifest().version, ...r });
+    })().catch(e => sendResponse({ error: `動画を作れませんでした: ${e && e.message ? e.message : e}` }));
+    return true;   // async sendResponse
+  }
   if (msg.type === "CLIP_GET_TIME") {
     // 「▶ 今の再生位置を開始にする」用。同期応答（待つものが無い）
     const v = document.querySelector("video");
