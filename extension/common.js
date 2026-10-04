@@ -6,13 +6,17 @@ const DEFAULT_LEN_SEC = 30;
 
 const VIDEO_W = 1920, VIDEO_H = 1080;        // 元動画の座標の基準（隠す四角はこの座標で持つ）
 const PORTRAIT_W = 1080, PORTRAIT_H = 1920;  // 縦（Shorts 9:16）
-const ZOOM_MIN = 0.5;                                   // 縦: 動画の幅を出力幅の半分まで縮小できる
-const ZOOM_FILL = PORTRAIT_H / (PORTRAIT_W * VIDEO_H / VIDEO_W);   // 縦: 動画の高さが出力の高さいっぱいになる倍率（≒3.16）
+// 縦: 元の動画の上に置く「囲み枠」。枠は動画の外へはみ出せる（はみ出した所は黒）。
+const CROP_OVER = 1 / 3;                     // はみ出せる量（動画の幅・高さに対する比）。編集画面は動画のまわりにこの分の余白を見せる
+const CROP_MIN_W = 240;                      // 枠の最小の幅（元動画の px）。これ以上小さいと拡大しすぎて絵が粗くなる
+const CROP_MAX_ASPECT = PORTRAIT_H / PORTRAIT_W;   // 枠の縦横比の上限（高さ ÷ 幅）。これを超えると出力の高さに入りきらない
+const DEFAULT_CROP = { x: (VIDEO_W - VIDEO_H) / 2, y: 0, w: VIDEO_H, h: VIDEO_H };   // 中央の正方形
 
 // ---- 設定の既定値 ----
 function defaultFrame(mode) {
-  // zoom: 1 = 動画の幅が出力の幅ぴったり。pan: 左右位置（0=左端 50=中央 100=右端）。valign: 動画が無い領域（黒）を上下どちらに作るか
-  if (mode === "portrait") return { mode, zoom: 1, pan: 50, valign: "center" };
+  // crop: 元の動画（1920×1080 基準）のどこを使うか。枠の幅が出力の幅いっぱいになるよう拡大し、余った上下は黒。
+  // valign: 切り出した絵を出力の 上・中央・下 のどこに置くか
+  if (mode === "portrait") return { mode, crop: { ...DEFAULT_CROP }, valign: "center" };
   return { mode: "landscape" };
 }
 // コメント: 右から左に流す。top_pct/lanes = 流す帯の上端と行数。cross_sec = 画面を横切る秒数。
@@ -24,8 +28,9 @@ const DEFAULT_CAPTION = { font_pct: 6.9, bottom_pct: 7 };
 function normalizeClip(clip) {
   const f = clip.frame || {};
   clip.frame = f.mode === "portrait"
-    ? { ...defaultFrame("portrait"), ...(Number.isFinite(f.zoom) ? { zoom: f.zoom } : {}), ...(Number.isFinite(f.pan) ? { pan: f.pan } : {}), ...(f.valign ? { valign: f.valign } : {}) }
+    ? { mode: "portrait", crop: clampCrop(f.crop && Number.isFinite(f.crop.w) ? f.crop : DEFAULT_CROP), valign: ["top", "center", "bottom"].includes(f.valign) ? f.valign : "center" }
     : { mode: "landscape" };
+  clip.audio = clip.audio !== false;   // 音声を入れるか（既定: 入れる）
   const o = clip.chat_overlay || {};
   clip.chat_overlay = { ...DEFAULT_CHAT_OVERLAY, ...(typeof o.enabled === "boolean" ? { enabled: o.enabled } : {}) };
   for (const k of ["opacity", "font_pct", "top_pct", "lanes", "cross_sec"]) if (o.style === "flow" && Number.isFinite(o[k])) clip.chat_overlay[k] = o[k];
@@ -158,15 +163,34 @@ function outSize(clip) {
 }
 
 // 出力の中で動画を置く矩形 {x, y, w, h}（出力の px）。縦は倍率・左右位置・上下ぞろえで決まり、動画の無い所は黒。
+// 囲み枠を使える範囲に収める: はみ出しは CROP_OVER まで、幅は CROP_MIN_W 以上、縦長すぎない
+function clampCrop(c) {
+  const maxW = VIDEO_W * (1 + 2 * CROP_OVER), maxH = VIDEO_H * (1 + 2 * CROP_OVER);
+  let w = Math.min(maxW, Math.max(CROP_MIN_W, c.w));
+  let h = Math.min(maxH, Math.max(CROP_MIN_W * 0.25, c.h), w * CROP_MAX_ASPECT);
+  const x = Math.min(VIDEO_W * (1 + CROP_OVER) - w, Math.max(-VIDEO_W * CROP_OVER, c.x));
+  const y = Math.min(VIDEO_H * (1 + CROP_OVER) - h, Math.max(-VIDEO_H * CROP_OVER, c.y));
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+}
+
+// 縦のとき、切り出した絵が出力のどこに入るか {x, y, w, h}（出力の px）。横は出力全体。
+function contentRect(clip) {
+  const { W, H } = outSize(clip);
+  const f = clip.frame || {};
+  if (f.mode !== "portrait") return { x: 0, y: 0, w: W, h: H };
+  const h = Math.min(H, f.crop.h * W / f.crop.w);
+  const y = f.valign === "top" ? 0 : f.valign === "bottom" ? H - h : (H - h) / 2;
+  return { x: 0, y, w: W, h };
+}
+
+// 出力の中で動画全体を置く矩形 {x, y, w, h}（出力の px）。縦は囲み枠が contentRect に重なるように拡大・移動する。
+// 実際に見えるのは contentRect の中だけ（外は黒）。
 function videoRect(clip) {
   const { W, H } = outSize(clip);
   const f = clip.frame || {};
   if (f.mode !== "portrait") return { x: 0, y: 0, w: W, h: H };
-  const zoom = Math.min(ZOOM_FILL, Math.max(ZOOM_MIN, Number(f.zoom) || 1));
-  const w = W * zoom, h = w * VIDEO_H / VIDEO_W;
-  const x = w <= W ? (W - w) / 2 : -(w - W) * Math.min(100, Math.max(0, Number.isFinite(f.pan) ? f.pan : 50)) / 100;
-  const y = f.valign === "top" ? 0 : f.valign === "bottom" ? H - h : (H - h) / 2;
-  return { x, y, w, h };
+  const k = W / f.crop.w, c = contentRect(clip);
+  return { x: -f.crop.x * k, y: c.y - f.crop.y * k, w: VIDEO_W * k, h: VIDEO_H * k };
 }
 
 // 元動画の座標（1920×1080 基準）→ 出力の座標
@@ -252,7 +276,16 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
   const v = videoRect(clip);
-  if (source) ctx.drawImage(source, v.x, v.y, v.w, v.h);
+  if (source) {
+    // 縦は囲み枠の中だけ見せる（枠の外の絵が上下の黒い所にはみ出さないようにする）
+    const c = contentRect(clip);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(c.x, c.y, c.w, c.h);
+    ctx.clip();
+    ctx.drawImage(source, v.x, v.y, v.w, v.h);
+    ctx.restore();
+  }
 
   // 隠す四角
   ctx.fillStyle = "#000";

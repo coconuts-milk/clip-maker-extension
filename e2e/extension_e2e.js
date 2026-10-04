@@ -161,28 +161,59 @@ async function waitVideoFile(since, tag, timeoutMs) {
     check("× で四角を消せる", await countMasks() === 2);
 
     // 5) プレビュー再生
+    // プレビュー再生: YouTube のタブが同じ所を再生し（音声はそちらから鳴る）、プレビューの時刻がそれに合う
+    await editor.evaluate(() => { const s = document.getElementById("pvtime"); s.value = 0; s.dispatchEvent(new Event("input")); });
     await editor.evaluate(() => document.getElementById("play").click());
-    await sleep(2500);
+    await sleep(3500);
     const pvT = await editor.evaluate(() => Number(document.getElementById("pvtime").value));
-    await editor.evaluate(() => document.getElementById("play").click());
+    const yt1 = await page.evaluate(() => { const v = document.querySelector("video"); return { t: v.currentTime, paused: v.paused }; });
     check("プレビューを再生すると時間が進む", pvT > 1.5, pvT);
+    check("再生中は YouTube のタブが同じ所を再生している（音声が鳴る）", !yt1.paused && Math.abs(yt1.t - (START + pvT)) < 0.6, { pv: pvT, yt: +(yt1.t - START).toFixed(2), paused: yt1.paused });
+    await editor.evaluate(() => document.getElementById("play").click());
+    await sleep(800);
+    const yt2 = await page.evaluate(() => document.querySelector("video").paused);
+    check("プレビューを止めると YouTube のタブも止まる", yt2 === true);
     // コメントが流れている最中の時刻にして見た目を撮る（最初のコメントの 2 秒後）
     const firstChat = await editor.evaluate(async () => { const m = (await chrome.storage.local.get("draft")).draft.chat.messages; return m.length ? m[0].t : 2; });
     await editor.evaluate(t => { const s = document.getElementById("pvtime"); s.value = t; s.dispatchEvent(new Event("input")); }, Math.min(LEN - 0.5, firstChat + 2));
     await editor.screenshot({ path: path.join(SHOTS, "editor_yoko.png"), fullPage: true });
 
-    // 6) 動画を作る（横 → 縦）。録画中は YouTube タブに表示が出る
+    // 6) 動画を作る。横（音あり）→ 縦（囲み枠を動画の外まで広げる・下より・音なし）。録画中は YouTube タブに表示が出る
     for (const mode of ["landscape", "portrait"]) {
       await editor.bringToFront();
       await editor.evaluate(m => document.querySelector(`input[name=mode][value=${m}]`).click(), mode);
       if (mode === "portrait") {
-        // 動画を上に寄せ、下の黒い所に字幕を置く
+        await sleep(400);
+        const crop = () => editor.evaluate(async () => (await chrome.storage.local.get("draft")).draft.clip.frame.crop);
+        const c0 = await crop();
+        check("縦: 最初は動画の中央を囲んでいる", c0 && c0.w === 1080 && c0.h === 1080 && c0.x === 420, c0);
+        // 右下の角を、動画の外（下の余白）まで引っぱる
+        const sb = await (await editor.$("#srcstage")).boundingBox();
+        const hb = await (await editor.$("#cropbox .h.se")).boundingBox();
+        await editor.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2); await editor.mouse.down();
+        await editor.mouse.move(sb.x + sb.width * 0.70, sb.y + sb.height * 0.93, { steps: 8 }); await editor.mouse.up();
+        await sleep(300);
+        const c1 = await crop();
+        check("縦: 枠を動画の外まで広げられる", c1.y + c1.h > 1080 + 100 && c1.w > c0.w, c1);
+        // 枠を掴んで左へ移動
+        const cb = await (await editor.$("#cropbox")).boundingBox();
+        await editor.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2); await editor.mouse.down();
+        await editor.mouse.move(cb.x + cb.width / 2 - sb.width * 0.08, cb.y + cb.height / 2, { steps: 6 }); await editor.mouse.up();
+        await sleep(300);
+        const c2 = await crop();
+        check("縦: 枠を掴んで移動できる", c2.x < c1.x - 100 && c2.w === c1.w && c2.h === c1.h, c2);
         await editor.evaluate(() => {
-          document.querySelector("input[name=valign][value=top]").click();
-          const set = (id, v) => { const e = document.getElementById(id); e.value = v; e.dispatchEvent(new Event("input")); e.dispatchEvent(new Event("change")); };
-          set("zoom", 1.6); set("cap_bottom", 60);
+          document.querySelector("input[name=valign][value=bottom]").click();
+          document.querySelector("input[name=audio][value=off]").click();
         });
         await sleep(300);
+        // 出来上がり: 下よりなので、上の端は黒・下の端は黒ではない（枠の中の絵が下に寄っている）
+        const px = await editor.evaluate(() => {
+          const cv = document.getElementById("pv"), g = cv.getContext("2d");
+          const sum = y => { const d = g.getImageData(0, y, cv.width, 1).data; let n = 0; for (let i = 0; i < d.length; i += 4) n += d[i] + d[i + 1] + d[i + 2]; return n; };
+          return { w: cv.width, h: cv.height, top: sum(20), mid: sum(Math.round(cv.height * 0.6)) };
+        });
+        check("縦: 下よりにすると上が黒い枠になる", px.w === 1080 && px.h === 1920 && px.top === 0 && px.mid > 0, px);
         await editor.screenshot({ path: path.join(SHOTS, "editor_tate.png"), fullPage: true });
       }
       const since = Date.now() - 1000;
@@ -194,7 +225,7 @@ async function waitVideoFile(since, tag, timeoutMs) {
       }
       check(`録画中の表示が出る（${mode}）`, banner && banner.includes("録画中です。タブ移動しないでください。") && /\d+\.\d \/ \d+\.\d 秒/.test(banner), banner);
       if (mode === "landscape") await page.screenshot({ path: path.join(SHOTS, "recording.png") });
-      const file = await waitVideoFile(since, mode === "portrait" ? "tate" : "yoko", (LEN + 60) * 1000);
+      const file = await waitVideoFile(since, mode === "portrait" ? "tate_otonashi" : "yoko", (LEN + 60) * 1000);
       await sleep(1000);
       const msg = await editor.evaluate(() => document.getElementById("msg").textContent);
       check(`動画ファイルができる（${mode}）`, !!file, `${file} / ${msg.replace(/\n/g, " ")}`);

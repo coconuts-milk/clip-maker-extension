@@ -37,6 +37,7 @@ function rangeChanged() {
 
 // 今の時間で字幕・コメント・プレビュー画像を取り直す。四角や見た目の設定は引き継ぐ。
 async function recapture() {
+  if (playing) await setPlaying(false);
   let r0;
   try { r0 = range.read(); } catch (e) { say("capmsg", String(e)); return; }
   say("capmsg", "取り直し中…（動画が少し動きます）", "busy");
@@ -77,8 +78,6 @@ const sliders = [];
 function setupOptions() {
   const c = () => draft.clip;
   sliders.push(
-    bindSlider("zoom", () => c().frame.zoom || 1, v => { c().frame.zoom = v; }, v => `${Math.round(v * 100)}%`),
-    bindSlider("pan", () => c().frame.pan ?? 50, v => { c().frame.pan = v; }, v => v === 50 ? "中央" : v < 50 ? `左 ${50 - v}` : `右 ${v - 50}`),
     bindSlider("cap_bottom", () => 100 - c().caption.bottom_pct, v => { c().caption.bottom_pct = 100 - v; }, v => v >= 85 ? "下" : v <= 15 ? "上" : "中"),
     bindSlider("cap_font", () => c().caption.font_pct, v => { c().caption.font_pct = v; }, v => v.toFixed(1)),
     bindSlider("chat_opacity", () => c().chat_overlay.opacity, v => { c().chat_overlay.opacity = v; }, v => `${Math.round(v * 100)}%`),
@@ -88,15 +87,18 @@ function setupOptions() {
     bindSlider("chat_cross", () => c().chat_overlay.cross_sec, v => { c().chat_overlay.cross_sec = v; }, v => `${v} 秒`),
   );
   document.querySelectorAll("input[name=mode]").forEach(el => el.addEventListener("change", () => {
-    // 縦の設定（大きさ・位置）は横に切り替えても覚えておく
+    // 縦の設定（囲み枠・上下の位置）は横に切り替えても覚えておく
     const old = draft.clip.frame;
     if (el.value === "portrait") draft.clip.frame = { ...defaultFrame("portrait"), ...(draft.portraitKeep || {}), mode: "portrait" };
-    else { if (old.mode === "portrait") draft.portraitKeep = { zoom: old.zoom, pan: old.pan, valign: old.valign }; draft.clip.frame = { mode: "landscape" }; }
+    else { if (old.mode === "portrait") draft.portraitKeep = { crop: old.crop, valign: old.valign }; draft.clip.frame = { mode: "landscape" }; }
     selMask = -1;
-    persist(); renderOptions(); resizeCanvas(); draw(); layoutMasks();
+    persist(); renderOptions(); resizeCanvas(); layoutCrop(); draw(); layoutMasks();
   }));
   document.querySelectorAll("input[name=valign]").forEach(el => el.addEventListener("change", () => {
     draft.clip.frame.valign = el.value; persist(); draw(); layoutMasks();
+  }));
+  document.querySelectorAll("input[name=audio]").forEach(el => el.addEventListener("change", () => {
+    draft.clip.audio = el.value === "on"; persist(); renderOptions();
   }));
   $("chat_on").addEventListener("change", () => {
     draft.clip.chat_overlay.enabled = $("chat_on").checked; persist(); renderOptions(); draw();
@@ -107,7 +109,9 @@ function renderOptions() {
   const f = draft.clip.frame, portrait = f.mode === "portrait";
   document.querySelector(`input[name=mode][value=${f.mode}]`).checked = true;
   $("portraitopts").classList.toggle("hidden", !portrait);
+  $("srcwrap").classList.toggle("hidden", !portrait);
   if (portrait) document.querySelector(`input[name=valign][value=${f.valign}]`).checked = true;
+  document.querySelector(`input[name=audio][value=${draft.clip.audio ? "on" : "off"}]`).checked = true;
   $("chat_on").checked = !!draft.clip.chat_overlay.enabled;
   $("chatopts").classList.toggle("hidden", !draft.clip.chat_overlay.enabled);
   sliders.forEach(show => show());
@@ -121,7 +125,7 @@ function loadFrames() {
   if (!f || f.error || !f.list || !f.list.length) return Promise.resolve();
   return Promise.all(f.list.map(fr => new Promise(resolve => {
     const img = new Image();
-    img.onload = () => { frameImgs.push({ t: fr.t, img }); resolve(); };
+    img.onload = () => { frameImgs.push({ t: fr.t, img, url: fr.dataUrl }); resolve(); };
     img.onerror = () => resolve();   // 壊れたコマは飛ばす（他のコマで表示できる）
     img.src = fr.dataUrl;
   }))).then(() => frameImgs.sort((a, b) => a.t - b.t));
@@ -130,10 +134,11 @@ function loadFrames() {
 function nearestFrame(t) {
   let best = null;
   for (const f of frameImgs) if (!best || Math.abs(f.t - t) < Math.abs(best.t - t)) best = f;
-  return best ? best.img : null;
+  return best;
 }
 
 function resizeCanvas() {
+  normalizeClip(draft.clip);
   const { W, H } = outSize(draft.clip);
   const cv = $("pv");
   if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
@@ -146,32 +151,128 @@ function draw() {
   const t = pvTime();
   $("pvtime").max = clipDur().toFixed(1);
   $("pvtimedisp").textContent = `${t.toFixed(1)} / ${clipDur().toFixed(1)} 秒`;
-  const img = nearestFrame(t);
+  const fr = nearestFrame(t);
   const f = draft.frames;
-  $("stagemsg").textContent = img ? "" : ((f && f.error) ? f.error : "プレビュー画像がありません。") + "\n「この時間で取り直す」を押すと表示されます。";
-  drawClipFrame($("pv").getContext("2d"), img, draft.clip, draft.captions.cues, draft.chat.messages, t);
+  $("stagemsg").textContent = fr ? "" : ((f && f.error) ? f.error : "プレビュー画像がありません。") + "\n「この時間で取り直す」を押すと表示されます。";
+  drawClipFrame($("pv").getContext("2d"), fr ? fr.img : null, draft.clip, draft.captions.cues, draft.chat.messages, t);
+  const si = $("srcimg");
+  if (fr && si.getAttribute("src") !== fr.url) si.src = fr.url;   // 縦のときに出す「元の動画」も同じコマにする
 }
 
-// 再生: スライダーを実時間で進める（映像は 2 秒ごとのコマ送り。字幕・コメント・四角の出入りは実時間どおり）
-let playing = null;
-function setPlaying(on) {
-  if (on) {
-    if (pvTime() >= clipDur() - 0.05) $("pvtime").value = 0;   // 末尾で押したら頭から
-    playing = { t0: performance.now(), s0: Number($("pvtime").value) };
-    $("play").textContent = "⏸";
-    requestAnimationFrame(tick);
-  } else {
+// 再生: YouTube のタブで同じ所を再生し（音声はそちらから鳴る）、その再生位置にプレビューの時刻を合わせる。
+// 映像は 2 秒ごとのコマ送りだが、字幕・コメント・四角は音声と同じ時刻で出入りするので、音を聞きながら字幕を合わせられる。
+// YouTube のタブが見つからないときだけ、音なしで時計どおりに進める。
+const PV_POLL_MS = 200;        // YouTube タブの再生位置を聞く間隔
+const PV_AHEAD_MAX = 0.35;     // 次の応答が来るまでに先へ進めてよい秒数（読み込み待ちの間に字幕だけ先走らないようにする）
+let playing = null;            // {base: 最後に分かった時刻, at: それを知った時点, live: 音声つきか, frozen: 止まっているか, poll}
+
+async function setPlaying(on) {
+  if (!on) {
+    if (!playing) return;
+    const was = playing;
     playing = null;
+    clearInterval(was.poll);
     $("play").textContent = "▶";
+    if (was.live) sendToTab({ type: "CLIP_PAUSE" }).catch(() => {});
+    return;
   }
+  if (playing) return;
+  if (pvTime() >= clipDur() - 0.05) $("pvtime").value = 0;   // 末尾で押したら頭から
+  const s0 = Number($("pvtime").value);
+  const me = playing = { base: s0, at: performance.now(), live: false, frozen: true, poll: null };
+  $("play").textContent = "⏸";
+  try {
+    await sendToTab({ type: "CLIP_PLAY", t: draft.clip.start_sec + s0, end: draft.clip.end_sec });
+    if (playing !== me) return;   // 待っている間に止められた
+    me.live = true;
+    me.poll = setInterval(() => pollTab(me), PV_POLL_MS);
+    say("pvmsg", "", "ok");
+  } catch (e) {
+    if (playing !== me) return;
+    me.frozen = false; me.at = performance.now();
+    say("pvmsg", `音なしで再生しています。${String(e).split("\n")[0]}`);
+  }
+  requestAnimationFrame(tick);
 }
+
+async function pollTab(me) {
+  let r;
+  try { r = await sendToTab({ type: "CLIP_GET_TIME" }); } catch (_) { return; }
+  if (playing !== me) return;
+  const rel = r.t - draft.clip.start_sec;
+  me.frozen = r.paused || Math.abs(rel - me.base) < 0.001;   // 一時停止中・読み込み待ちは時刻を進めない
+  me.base = rel; me.at = performance.now();
+  say("pvmsg", r.muted ? "YouTube の音量がミュートになっています。音を聞くには YouTube のタブでミュートを解除してください。" : "", r.muted ? "bad" : "ok");
+  if (r.paused && (rel >= clipDur() - 0.15 || rel < -0.5)) { $("pvtime").value = Math.min(clipDur(), Math.max(0, rel)); draw(); setPlaying(false); }
+  else if (r.paused && me.sawPlaying) setPlaying(false);       // YouTube のタブ側で止められた
+  if (!r.paused) me.sawPlaying = true;
+}
+
 function tick(now) {
   if (!playing) return;
-  const t = playing.s0 + (now - playing.t0) / 1000;
+  const ahead = playing.frozen ? 0 : (now - playing.at) / 1000;
+  const t = playing.base + (playing.live ? Math.min(ahead, PV_AHEAD_MAX) : ahead);
   if (t >= clipDur()) { $("pvtime").value = clipDur(); draw(); setPlaying(false); return; }
-  $("pvtime").value = t.toFixed(2);
+  $("pvtime").value = Math.max(0, t).toFixed(2);
   draw();
   requestAnimationFrame(tick);
+}
+
+// ---- 縦: 囲み枠（元の動画のどこを使うか） ----
+// 「元の動画」の表示は、動画のまわりに CROP_OVER ぶんの余白を付けた範囲（幅 5/3・高さ 5/3）。座標は元動画の px。
+
+const SRC_VIEW = { x: -VIDEO_W * CROP_OVER, y: -VIDEO_H * CROP_OVER, w: VIDEO_W * (1 + 2 * CROP_OVER), h: VIDEO_H * (1 + 2 * CROP_OVER) };
+
+function layoutCrop() {
+  if (draft.clip.frame.mode !== "portrait") return;
+  const c = draft.clip.frame.crop, b = $("cropbox").style;
+  b.left = ((c.x - SRC_VIEW.x) / SRC_VIEW.w * 100) + "%"; b.top = ((c.y - SRC_VIEW.y) / SRC_VIEW.h * 100) + "%";
+  b.width = (c.w / SRC_VIEW.w * 100) + "%"; b.height = (c.h / SRC_VIEW.h * 100) + "%";
+}
+
+function setupCropEditing() {
+  const st = $("srcstage");
+  let drag = null;
+  const toSrc = ev => {
+    const r = st.getBoundingClientRect();
+    return { x: SRC_VIEW.x + Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)) * SRC_VIEW.w,
+             y: SRC_VIEW.y + Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) * SRC_VIEW.h };
+  };
+  const apply = c => { draft.clip.frame.crop = clampCrop(c); layoutCrop(); draw(); layoutMasks(); };
+  // 固定する角 anchor と動かす角 p から枠を作る。縦長すぎるときは高さを詰め、固定した角は動かさない
+  const fromCorners = (anchor, p) => {
+    const w = Math.max(CROP_MIN_W, Math.abs(p.x - anchor.x));
+    const h = Math.min(Math.max(CROP_MIN_W * 0.25, Math.abs(p.y - anchor.y)), w * CROP_MAX_ASPECT);
+    return { x: p.x < anchor.x ? anchor.x - w : anchor.x, y: p.y < anchor.y ? anchor.y - h : anchor.y, w, h };
+  };
+  st.addEventListener("pointerdown", ev => {
+    if (ev.button !== 0 || draft.clip.frame.mode !== "portrait") return;
+    const p = toSrc(ev), c = draft.clip.frame.crop;
+    if (ev.target.dataset.h) {
+      const hh = ev.target.dataset.h;
+      drag = { kind: "corner", anchor: { x: hh.includes("w") ? c.x + c.w : c.x, y: hh.includes("n") ? c.y + c.h : c.y } };
+    } else if (ev.target.id === "cropbox") {
+      drag = { kind: "move", dx: p.x - c.x, dy: p.y - c.y };
+    } else {
+      drag = { kind: "corner", anchor: p };   // 何も無い所からドラッグ: 新しく囲み直す
+    }
+    st.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  st.addEventListener("pointermove", ev => {
+    if (!drag) return;
+    const p = toSrc(ev), c = draft.clip.frame.crop;
+    if (drag.kind === "move") apply({ x: p.x - drag.dx, y: p.y - drag.dy, w: c.w, h: c.h });
+    else if (Math.abs(p.x - drag.anchor.x) > 8 || Math.abs(p.y - drag.anchor.y) > 8) apply(fromCorners(drag.anchor, p));
+  });
+  const finish = ev => {
+    if (!drag) return;
+    drag = null;
+    try { st.releasePointerCapture(ev.pointerId); } catch (_) { /* 既に解放済み */ }
+    persist();
+  };
+  st.addEventListener("pointerup", finish);
+  st.addEventListener("pointercancel", finish);
 }
 
 // ---- 隠す四角 ----
@@ -367,8 +468,11 @@ function renderCues() {
   });
 }
 
+// 字幕行の ▶: その字幕の所だけ YouTube のタブで再生する（音声の確認）。プレビューもその字幕の頭に合わせる
 async function playCue(cue) {
-  try { await sendToTab({ type: "CLIP_PLAY", t: draft.clip.start_sec + cue.start, dur: Math.max(cue.end - cue.start, 0.5) }); }
+  if (playing) await setPlaying(false);
+  $("pvtime").value = cue.start; draw();
+  try { await sendToTab({ type: "CLIP_PLAY", t: draft.clip.start_sec + cue.start, end: draft.clip.start_sec + Math.max(cue.end, cue.start + 0.5) }); }
   catch (e) { say("cuesmsg", String(e)); }
 }
 
@@ -448,7 +552,7 @@ async function makeVideo() {
   if (err) { say("msg", err); return; }
   let tab, me;
   try { tab = await ytTab(); me = await chrome.tabs.getCurrent(); } catch (e) { say("msg", String(e)); return; }
-  if (playing) setPlaying(false);
+  if (playing) await setPlaying(false);
   $("save").disabled = true;
   await persist();
   say("msg", "録画中…", "busy");
@@ -477,6 +581,7 @@ function renderAll() {
   renderOptions();
   resizeCanvas();
   renderCues(); renderChat();
+  layoutCrop();
   layoutMasks();
   draw();
 }
@@ -498,6 +603,7 @@ async function init() {
 
   setupOptions();
   setupMaskEditing();
+  setupCropEditing();
   await loadFrames();
   renderAll();
 

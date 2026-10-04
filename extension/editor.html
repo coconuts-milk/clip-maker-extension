@@ -28,10 +28,23 @@
   .hidden { display: none !important; }
 
   /* プレビュー */
-  #stagewrap { display: flex; justify-content: center; background: #222; border-radius: 6px; padding: 8px; }
+  #stagewrap { display: flex; justify-content: center; align-items: center; gap: 12px; background: #222; border-radius: 6px; padding: 8px; }
+  /* 縦のときだけ出す「元の動画」。動画のまわりに余白を見せて、囲み枠を動画の外まで広げられるようにする */
+  #srcwrap { flex: 1 1 0; min-width: 0; }
+  .srccap { color: #fff; font-size: 15px; margin-bottom: 6px; }
+  .srccap.sub { color: #bbb; font-size: 14px; margin: 6px 0 0; }
+  #srcstage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; touch-action: none; user-select: none; cursor: crosshair;
+              background-image: repeating-linear-gradient(45deg, #1b1b1b 0 10px, #111 10px 20px); }
+  #srcimg { position: absolute; left: 20%; top: 20%; width: 60%; height: 60%; pointer-events: none; }
+  #cropbox { position: absolute; border: 3px solid #ffd400; box-sizing: border-box; cursor: move; box-shadow: 0 0 0 9999px rgba(0,0,0,.55); }
+  #cropbox .h { position: absolute; width: 18px; height: 18px; background: #ffd400; border: 2px solid #000; border-radius: 3px; }
+  #cropbox .h.nw { left: -10px; top: -10px; cursor: nwse-resize; }
+  #cropbox .h.ne { right: -10px; top: -10px; cursor: nesw-resize; }
+  #cropbox .h.sw { left: -10px; bottom: -10px; cursor: nesw-resize; }
+  #cropbox .h.se { right: -10px; bottom: -10px; cursor: nwse-resize; }
   #stage { position: relative; overflow: hidden; background: #000; touch-action: none; user-select: none; }
   #stage.landscape { width: 100%; aspect-ratio: 16 / 9; }
-  #stage.portrait { height: min(74vh, 800px); aspect-ratio: 9 / 16; }
+  #stage.portrait { height: min(70vh, 720px); aspect-ratio: 9 / 16; flex: 0 0 auto; }
   #pv { position: absolute; inset: 0; width: 100%; height: 100%; }
   #ov { position: absolute; inset: 0; cursor: crosshair; }
   .mask { position: absolute; border: 2px solid #ff4d4d; box-sizing: border-box; cursor: move; }
@@ -102,14 +115,20 @@
           <label><input type="radio" name="mode" value="portrait"> 縦（ショート）</label>
         </div>
         <div id="portraitopts">
-          <div class="opt"><span>動画の大きさ</span><input id="zoom" type="range" min="0.5" max="3.16" step="0.01"><span class="val" id="zoomv"></span></div>
-          <div class="opt"><span>左右の位置</span><input id="pan" type="range" min="0" max="100" step="1"><span class="val" id="panv"></span></div>
           <div class="opt"><span>上下の位置</span>
             <div class="choice">
-              <label><input type="radio" name="valign" value="top"> 上</label>
+              <label><input type="radio" name="valign" value="top"> 上より</label>
               <label><input type="radio" name="valign" value="center"> 中央</label>
-              <label><input type="radio" name="valign" value="bottom"> 下</label>
+              <label><input type="radio" name="valign" value="bottom"> 下より</label>
             </div><span></span></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>音声</h2>
+        <div class="choice">
+          <label><input type="radio" name="audio" value="on"> 音あり</label>
+          <label><input type="radio" name="audio" value="off"> 音なし</label>
         </div>
       </section>
 
@@ -135,8 +154,16 @@
     <div>
       <section>
         <h2>② 出来上がり</h2>
-        <div id="stagewrap"><div id="stage" class="landscape"><canvas id="pv"></canvas><div id="ov"></div><div id="stagemsg"></div></div></div>
+        <div id="stagewrap">
+          <div id="srcwrap" class="hidden">
+            <div class="srccap">元の動画 — 黄色い枠で使う所を囲む</div>
+            <div id="srcstage"><img id="srcimg" alt=""><div id="cropbox"><div class="h nw" data-h="nw"></div><div class="h ne" data-h="ne"></div><div class="h sw" data-h="sw"></div><div class="h se" data-h="se"></div></div></div>
+            <div class="srccap sub">枠は掴んで移動・角で大きさ変更。動画の外まで広げた所と、枠の上下は黒になります。</div>
+          </div>
+          <div id="stage" class="landscape"><canvas id="pv"></canvas><div id="ov"></div><div id="stagemsg"></div></div>
+        </div>
         <div id="timebar"><button id="play" title="再生／停止（スペースキー）">▶</button><input id="pvtime" type="range" min="0" max="15" step="0.1" value="0"><span id="pvtimedisp"></span></div>
+        <div id="pvmsg" class="msg" style="min-height:0"></div>
         <div class="hint">隠したい所は画面の上をドラッグ。四角はいくつでも作れます。作った四角は、掴んで移動・角を掴んで大きさ変更・× で削除。</div>
         <table id="masklist" class="hidden"><thead><tr><th>隠す四角</th><th>出す時間（秒）</th><th>消す時間（空＝最後まで）</th><th></th></tr></thead><tbody></tbody></table>
       </section>

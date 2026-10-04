@@ -195,7 +195,8 @@ async function captureFrames(v, start, end) {
 // 実時間で再生しながら録るので、60 秒の切り抜きは 60 秒かかる。音声は <video> の captureStream から取る。
 // 描画は common.js の drawClipFrame（編集画面のプレビューと同じ関数）。
 
-const REC_FPS = 30;
+const REC_FPS = 30;              // 動画のコマに合わせた取り込みが使えないブラウザでの取り込み間隔
+const REC_WATCH_MS = 200;        // 録画の終了・異常を見張る間隔
 const REC_VIDEO_BPS = 8000000;   // 1080p30 の H.264 で破綻しない実用値
 const REC_AUDIO_BPS = 192000;
 // mp4 を優先。録れない環境だけ webm（拡張子も webm にして、別形式を mp4 と偽らない）
@@ -259,32 +260,55 @@ async function recordClip(v, clip, cues, chat) {
   try {
     v.pause();
     v.playbackRate = 1;
-    v.muted = false;   // ミュートのままだと無音の動画になる
+    if (clip.audio) v.muted = false;   // 音声を入れるとき、ミュートのままだと無音の動画になる
     await seekTo(v, clip.start_sec);
     drawClipFrame(ctx, v, clip, cues, chat, 0);
     banner = showRecBanner(total);
 
-    const audioTracks = v.captureStream().getAudioTracks();
-    const stream = new MediaStream([...canvas.captureStream(REC_FPS).getVideoTracks(), ...audioTracks]);
+    // 取り込み方: 動画の新しいコマが画面に出るたびに 1 枚描いて 1 枚取り込む（requestVideoFrameCallback + requestFrame）。
+    // 一定間隔で取り込む方式は、動画のコマと取り込みのタイミングがずれてコマが飛ぶ
+    // （2026-10-04 実測: 30 コマ/秒の動画が約 26 コマ/秒になり、14 秒で 50〜90 回飛んだ）。
+    const perFrame = typeof v.requestVideoFrameCallback === "function";
+    const vTrack = canvas.captureStream(perFrame ? 0 : REC_FPS).getVideoTracks()[0];
+    const pushFrame = () => { if (perFrame && vTrack.requestFrame) vTrack.requestFrame(); };
+    const audioTracks = clip.audio ? v.captureStream().getAudioTracks() : [];
+    if (clip.audio && !audioTracks.length) throw new Error("この動画から音声を取り出せませんでした");
+    const stream = new MediaStream([vTrack, ...audioTracks]);
     rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: REC_VIDEO_BPS, audioBitsPerSecond: REC_AUDIO_BPS });
     const chunks = [];
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const stopped = new Promise((resolve, reject) => { rec.onstop = resolve; rec.onerror = e => reject(e.error || new Error("録画エラー")); });
 
     rec.start(1000);
+    pushFrame();
     await v.play();
     await new Promise((resolve, reject) => {
       const t0 = Date.now(), limit = total * 1000 * 3 + 15000;   // 読み込み待ちで止まっても永久に待たない
-      const loop = () => {
-        const t = Math.max(0, v.currentTime - clip.start_sec);
-        drawClipFrame(ctx, v, clip, cues, chat, t);
-        banner.update(t);
-        if (v.currentTime >= clip.end_sec || v.ended) { resolve(); return; }
-        if (Date.now() - t0 > limit) { reject(new Error("録画が時間内に終わりませんでした（動画の読み込みが止まっていないか確認してください）")); return; }
-        if (document.hidden) { reject(new Error("録画中に YouTube のタブが隠れました。録画中はタブを移動しないでください")); return; }
-        requestAnimationFrame(loop);
+      let done = false, lastT = 0, watch = null;
+      const finish = (fn, arg) => { if (done) return; done = true; clearInterval(watch); fn(arg); };
+      const paint = mediaTime => {
+        lastT = Math.max(0, mediaTime - clip.start_sec);
+        drawClipFrame(ctx, v, clip, cues, chat, lastT);
+        pushFrame();
       };
-      requestAnimationFrame(loop);
+      if (perFrame) {
+        const onFrame = (_now, meta) => {
+          if (done) return;
+          if (meta.mediaTime >= clip.end_sec) { finish(resolve); return; }
+          paint(meta.mediaTime);
+          v.requestVideoFrameCallback(onFrame);
+        };
+        v.requestVideoFrameCallback(onFrame);
+      } else {
+        const loop = () => { if (done) return; paint(v.currentTime); requestAnimationFrame(loop); };
+        requestAnimationFrame(loop);
+      }
+      watch = setInterval(() => {
+        banner.update(lastT);
+        if (v.currentTime >= clip.end_sec || v.ended) finish(resolve);
+        else if (Date.now() - t0 > limit) finish(reject, new Error("録画が時間内に終わりませんでした（動画の読み込みが止まっていないか確認してください）"));
+        else if (document.hidden) finish(reject, new Error("録画中に YouTube のタブが隠れました。録画中はタブを移動しないでください"));
+      }, REC_WATCH_MS);
     });
     v.pause();
     rec.stop();
@@ -294,7 +318,7 @@ async function recordClip(v, clip, cues, chat) {
     if (!blob.size) throw new Error("録画データが空でした");
     const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
     const p = splitTime(clip.start_sec);
-    const file = `clip_${clip.video_id}_${pad2(p.h)}h${pad2(p.m)}m${pad2(p.s)}s_${clip.frame.mode === "portrait" ? "tate" : "yoko"}.${ext}`;
+    const file = `clip_${clip.video_id}_${pad2(p.h)}h${pad2(p.m)}m${pad2(p.s)}s_${clip.frame.mode === "portrait" ? "tate" : "yoko"}${clip.audio ? "" : "_otonashi"}.${ext}`;
     lastRecording = { id: String(Date.now()), blob };
     return { id: lastRecording.id, size: blob.size, mime: blob.type, file, ext, sec: +total.toFixed(1), mb: +(blob.size / 1048576).toFixed(1) };
   } finally {
@@ -315,17 +339,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === "CLIP_GET_TIME") {
     if (!v || !videoId()) { sendResponse({ error: "YouTube の動画ページで使ってください" }); return; }
-    sendResponse({ ver, t: v.currentTime, paused: v.paused, duration: v.duration, video_id: videoId() });
+    sendResponse({ ver, t: v.currentTime, paused: v.paused, muted: v.muted || v.volume === 0, duration: v.duration, video_id: videoId() });
     return;
   }
   if (msg.type === "CLIP_PLAY") {
-    // 字幕行の「▶」用。指定の位置へ移動して再生し、dur 秒後に一時停止する（音声の確認）。
+    // 指定の位置へ移動して再生し、end（動画内の秒）に達したら一時停止する。
+    // 編集画面のプレビュー再生（音声はこのタブから鳴る）と、字幕行の「▶」で使う。
     if (!v) { sendResponse({ error: "YouTube の動画ページで使ってください" }); return; }
-    if (!Number.isFinite(msg.t) || msg.t < 0) { sendResponse({ error: "再生位置が不正です" }); return; }
+    if (recording) { sendResponse({ error: "録画中は再生できません" }); return; }
+    if (!Number.isFinite(msg.t) || msg.t < 0 || !Number.isFinite(msg.end) || msg.end <= msg.t) { sendResponse({ error: "再生位置が不正です" }); return; }
+    clearInterval(window.__clipPlayTimer);   // 連打時は最後の 1 回だけ効かせる
     v.currentTime = msg.t;
     v.play().catch(() => {});
-    clearTimeout(window.__clipPlayTimer);   // 連打時は最後の 1 回だけ効かせる
-    if (Number.isFinite(msg.dur) && msg.dur > 0) window.__clipPlayTimer = setTimeout(() => v.pause(), msg.dur * 1000);
+    window.__clipPlayTimer = setInterval(() => {
+      if (v.currentTime >= msg.end || v.paused && !v.seeking && v.readyState >= 3) {
+        clearInterval(window.__clipPlayTimer);
+        if (v.currentTime >= msg.end) v.pause();
+      }
+    }, 50);
+    sendResponse({ ver, ok: true });
+    return;
+  }
+  if (msg.type === "CLIP_PAUSE") {
+    if (v && !recording) { clearInterval(window.__clipPlayTimer); v.pause(); }
     sendResponse({ ver, ok: true });
     return;
   }
