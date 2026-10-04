@@ -20,12 +20,46 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const checks = [];
 const check = (name, ok, detail) => { checks.push({ name, ok: !!ok }); console.log(`${ok ? "OK " : "NG "} ${name}${detail !== undefined ? " — " + (typeof detail === "string" ? detail : JSON.stringify(detail)) : ""}`); };
 
+// ファイル名は「作った日時_縦横_音の有無」。例: 20261004_153045_short_sound_off.mp4
+// ffmpeg / ffprobe の場所（PATH に無ければ winget の入れ先を探す）
+function tool(name) {
+  const { execSync } = require("child_process");
+  try { return execSync(`where ${name}`, { encoding: "utf8" }).split(/\r?\n/)[0].trim(); } catch (_) { /* PATH に無い */ }
+  const root = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Packages");
+  for (const d of fs.existsSync(root) ? fs.readdirSync(root).filter(n => n.startsWith("Gyan.FFmpeg")) : []) {
+    for (const v of fs.readdirSync(path.join(root, d))) {
+      const f = path.join(root, d, v, "bin", name + ".exe");
+      if (fs.existsSync(f)) return f;
+    }
+  }
+  throw new Error(name + " が見つかりません");
+}
+// 動画に入っているもの: ["video", "audio"] など
+function streamsOf(file) {
+  const { execFileSync } = require("child_process");
+  return execFileSync(tool("ffprobe"), ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file], { encoding: "utf8" }).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+}
+// 動画の t 秒のコマから、横いっぱい・高さ 40px の帯（上端が y）を取り、明るさの平均（0〜255）を返す
+function bandBrightness(file, t, y) {
+  const { execFileSync } = require("child_process");
+  const buf = execFileSync(tool("ffmpeg"), ["-v", "error", "-ss", String(t), "-i", file, "-frames:v", "1", "-vf", `crop=iw:40:0:${y}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"], { maxBuffer: 1 << 26 });
+  let n = 0;
+  for (const b of buf) n += b;
+  return buf.length ? n / buf.length : -1;
+}
+
+// 「YouTube のタブが古い部品のまま」を再現するため、途中で部品の版（common.js の BUILD）を書き換える。終わったら必ず元に戻す
+const COMMON = path.join(EXT, "common.js");
+const COMMON_ORIG = fs.readFileSync(COMMON, "utf8");
+const restoreCommon = () => fs.writeFileSync(COMMON, COMMON_ORIG);
+process.on("exit", restoreCommon);
+
 async function waitVideoFile(since, tag, timeoutMs) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
     if (fs.existsSync(OUT)) {
       const hit = fs.readdirSync(OUT)
-        .filter(n => n.startsWith(`clip_${VIDEO}_`) && n.includes(tag) && /\.(mp4|webm)$/.test(n))
+        .filter(n => new RegExp(`^\\d{8}_\\d{6}_${tag}\\.(mp4|webm)$`).test(n))
         .map(n => path.join(OUT, n))
         .filter(p => fs.statSync(p).mtimeMs >= since && fs.statSync(p).size > 0);
       if (hit.length) return hit.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
@@ -77,12 +111,29 @@ async function waitVideoFile(since, tag, timeoutMs) {
       };
     }, VIDEO);
     await panel.setViewport({ width: 360, height: 640 });   // サイドパネルの実際の幅で確認する
+
+    // 「ファイルだけ新しくなり、拡張の更新ボタンは押していない」状態の再現: 部品の版（BUILD）だけ書き換えてパネルを開く。
+    // これで「止まらない・囲み枠が効かない・音なしが効かない」が起きた（2026-10-04）。案内と更新ボタンが出て、命令は送られないこと
+    if (!/const BUILD = "[^"]+";/.test(COMMON_ORIG)) throw new Error("common.js に BUILD が無い");
+    fs.writeFileSync(COMMON, COMMON_ORIG.replace(/const BUILD = "[^"]+";/, 'const BUILD = "e2e-newer";'));
+    await panel.goto(`chrome-extension://${extId}/panel.html`);
+    await sleep(1500);
+    const stale = await panel.evaluate(async () => {
+      const n = document.getElementById("needreload");
+      const others = [...document.querySelectorAll("button")].filter(b => !b.closest("#needreload"));
+      return { notice: n ? n.textContent : null, button: !!(n && n.querySelector("button") && !n.querySelector("button").disabled), othersDisabled: others.length > 0 && others.every(b => b.disabled) };
+    });
+    check("拡張が古いままのとき、案内と「拡張を更新する」ボタンが出る", stale.notice && stale.notice.includes("拡張を更新する") && stale.button, stale.notice);
+    check("拡張が古いままのとき、ほかのボタンは押せない（古い部品に命令を送らない）", stale.othersDisabled);
+    restoreCommon();
+
     await panel.goto(`chrome-extension://${extId}/panel.html`);
     await sleep(2500);
     const p1 = await panel.evaluate(() => {
       const vals = id => [...document.querySelectorAll(`#${id} input`)].map(e => e.value);
       return { start: vals("start"), end: vals("end"), len: document.getElementById("length").value, msg: document.getElementById("msg").textContent };
     });
+    check("ふだんは案内が出ない", await panel.evaluate(() => !document.getElementById("needreload")));
     const startSec = Number(p1.start[0]) * 3600 + Number(p1.start[1]) * 60 + Number(p1.start[2]) + Number(p1.start[3]) / 10;
     check("パネル: 開いた時点の再生位置が開始に入る", Math.abs(startSec - START) < 1.5, p1);
     check("パネル: 時間の枠は 時:分:秒.コンマ の 4 つで 0 埋め", p1.start.length === 4 && p1.start[0].length === 2 && p1.start[1].length === 2 && p1.start[2].length === 2 && p1.start[3].length === 1);
@@ -173,6 +224,13 @@ async function waitVideoFile(since, tag, timeoutMs) {
     await sleep(800);
     const yt2 = await page.evaluate(() => document.querySelector("video").paused);
     check("プレビューを止めると YouTube のタブも止まる", yt2 === true);
+    // 終わりまで再生したら、YouTube のタブも終了の位置で止まる
+    await editor.evaluate(t => { const s = document.getElementById("pvtime"); s.value = t; s.dispatchEvent(new Event("input")); }, LEN - 2);
+    await editor.evaluate(() => document.getElementById("play").click());
+    await sleep(4500);
+    const yt3 = await page.evaluate(() => { const v = document.querySelector("video"); return { t: v.currentTime, paused: v.paused }; });
+    const btn = await editor.evaluate(() => document.getElementById("play").textContent);
+    check("終わりまで再生すると YouTube のタブも終了の位置で止まる", yt3.paused && Math.abs(yt3.t - (START + LEN)) < 0.6 && btn === "▶", { yt: +(yt3.t - START).toFixed(2), paused: yt3.paused, btn });
     // コメントが流れている最中の時刻にして見た目を撮る（最初のコメントの 2 秒後）
     const firstChat = await editor.evaluate(async () => { const m = (await chrome.storage.local.get("draft")).draft.chat.messages; return m.length ? m[0].t : 2; });
     await editor.evaluate(t => { const s = document.getElementById("pvtime"); s.value = t; s.dispatchEvent(new Event("input")); }, Math.min(LEN - 0.5, firstChat + 2));
@@ -185,35 +243,38 @@ async function waitVideoFile(since, tag, timeoutMs) {
       if (mode === "portrait") {
         await sleep(400);
         const crop = () => editor.evaluate(async () => (await chrome.storage.local.get("draft")).draft.clip.frame.crop);
+        const ratioOk = c => Math.abs(c.h / c.w - 16 / 9) < 0.01;
         const c0 = await crop();
-        check("縦: 最初は動画の中央を囲んでいる", c0 && c0.w === 1080 && c0.h === 1080 && c0.x === 420, c0);
-        // 右下の角を、動画の外（下の余白）まで引っぱる
+        check("縦: 最初の枠は 9:16 で動画の中央", c0 && c0.w === 1080 && c0.h === 1920 && c0.x === 420 && c0.y === -420, c0);
+        // 右下の角を引っぱって大きくする。形は 9:16 のまま
         const sb = await (await editor.$("#srcstage")).boundingBox();
         const hb = await (await editor.$("#cropbox .h.se")).boundingBox();
         await editor.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2); await editor.mouse.down();
-        await editor.mouse.move(sb.x + sb.width * 0.70, sb.y + sb.height * 0.93, { steps: 8 }); await editor.mouse.up();
+        await editor.mouse.move(hb.x + hb.width / 2 + sb.width * 0.12, hb.y + hb.height / 2 + sb.height * 0.02, { steps: 8 }); await editor.mouse.up();
         await sleep(300);
         const c1 = await crop();
-        check("縦: 枠を動画の外まで広げられる", c1.y + c1.h > 1080 + 100 && c1.w > c0.w, c1);
+        check("縦: 枠の大きさを変えても形は 9:16 のまま", c1.w > c0.w + 100 && ratioOk(c1), c1);
         // 枠を掴んで左へ移動
         const cb = await (await editor.$("#cropbox")).boundingBox();
         await editor.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2); await editor.mouse.down();
-        await editor.mouse.move(cb.x + cb.width / 2 - sb.width * 0.08, cb.y + cb.height / 2, { steps: 6 }); await editor.mouse.up();
+        await editor.mouse.move(cb.x + cb.width / 2 - sb.width * 0.06, cb.y + cb.height / 2, { steps: 6 }); await editor.mouse.up();
         await sleep(300);
         const c2 = await crop();
-        check("縦: 枠を掴んで移動できる", c2.x < c1.x - 100 && c2.w === c1.w && c2.h === c1.h, c2);
+        check("縦: 枠を掴んで移動できる", c2.x < c1.x - 80 && c2.w === c1.w && ratioOk(c2), c2);
         await editor.evaluate(() => {
           document.querySelector("input[name=valign][value=bottom]").click();
           document.querySelector("input[name=audio][value=off]").click();
         });
         await sleep(300);
-        // 出来上がり: 下よりなので、上の端は黒・下の端は黒ではない（枠の中の絵が下に寄っている）
+        const c3 = await crop();
+        check("縦: 下よりにすると動画の下端と枠の下端がそろう", Math.abs(c3.y + c3.h - 1080) <= 1 && c3.w === c2.w, c3);
+        // 出来上がり: 下よりなので、上の端は黒・下の端は黒ではない
         const px = await editor.evaluate(() => {
           const cv = document.getElementById("pv"), g = cv.getContext("2d");
           const sum = y => { const d = g.getImageData(0, y, cv.width, 1).data; let n = 0; for (let i = 0; i < d.length; i += 4) n += d[i] + d[i + 1] + d[i + 2]; return n; };
-          return { w: cv.width, h: cv.height, top: sum(20), mid: sum(Math.round(cv.height * 0.6)) };
+          return { w: cv.width, h: cv.height, top: sum(20), low: sum(Math.round(cv.height * 0.8)) };
         });
-        check("縦: 下よりにすると上が黒い枠になる", px.w === 1080 && px.h === 1920 && px.top === 0 && px.mid > 0, px);
+        check("縦: 下よりにすると上が黒い枠になる", px.w === 1080 && px.h === 1920 && px.top === 0 && px.low > 0, px);
         await editor.screenshot({ path: path.join(SHOTS, "editor_tate.png"), fullPage: true });
       }
       const since = Date.now() - 1000;
@@ -225,19 +286,30 @@ async function waitVideoFile(since, tag, timeoutMs) {
       }
       check(`録画中の表示が出る（${mode}）`, banner && banner.includes("録画中です。タブ移動しないでください。") && /\d+\.\d \/ \d+\.\d 秒/.test(banner), banner);
       if (mode === "landscape") await page.screenshot({ path: path.join(SHOTS, "recording.png") });
-      const file = await waitVideoFile(since, mode === "portrait" ? "tate_otonashi" : "yoko", (LEN + 60) * 1000);
+      const file = await waitVideoFile(since, mode === "portrait" ? "short_sound_off" : "horizon_sound_on", (LEN + 60) * 1000);
       await sleep(1000);
       const msg = await editor.evaluate(() => document.getElementById("msg").textContent);
       check(`動画ファイルができる（${mode}）`, !!file, `${file} / ${msg.replace(/\n/g, " ")}`);
       const bannerGone = await page.evaluate(() => !document.getElementById("clip-maker-rec"));
       check(`録画が終わったら表示が消える（${mode}）`, bannerGone);
       files.push(file);
+      if (file) {
+        const st = streamsOf(file);
+        if (mode === "landscape") check("音あり: 動画に音声が入っている", st.includes("video") && st.includes("audio"), st);
+        else {
+          check("音なし: 動画に音声が入っていない", st.includes("video") && !st.includes("audio"), st);
+          // 出来た動画そのものが、枠どおり（下より = 上が黒・下に絵）になっている
+          const top = bandBrightness(file, 3, 10), low = bandBrightness(file, 3, 1500);
+          check("縦: 出来た動画が囲み枠どおりに切り取られている", top < 3 && low > 20, { top: +top.toFixed(1), low: +low.toFixed(1) });
+        }
+      }
     }
     console.log("FILES=" + JSON.stringify(files));
   } catch (e) {
     check("途中で止まらずに最後まで進む", false, e && e.stack ? e.stack : String(e));
   } finally {
     await browser.close();
+    restoreCommon();
   }
   const ng = checks.filter(c => !c.ok);
   console.log(ng.length ? `E2E_FAIL (${ng.length} 件: ${ng.map(c => c.name).join(" / ")})` : `E2E_OK (${checks.length} 件)`);

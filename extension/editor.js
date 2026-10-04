@@ -95,7 +95,10 @@ function setupOptions() {
     persist(); renderOptions(); resizeCanvas(); layoutCrop(); draw(); layoutMasks();
   }));
   document.querySelectorAll("input[name=valign]").forEach(el => el.addEventListener("change", () => {
-    draft.clip.frame.valign = el.value; persist(); draw(); layoutMasks();
+    const f = draft.clip.frame;
+    f.valign = el.value;
+    f.crop = alignCrop(f.crop, f.valign);   // 選んだ合わせ方の位置へ枠を動かす（自由はそのまま）
+    persist(); layoutCrop(); draw(); layoutMasks();
   }));
   document.querySelectorAll("input[name=audio]").forEach(el => el.addEventListener("change", () => {
     draft.clip.audio = el.value === "on"; persist(); renderOptions();
@@ -219,9 +222,7 @@ function tick(now) {
 }
 
 // ---- 縦: 囲み枠（元の動画のどこを使うか） ----
-// 「元の動画」の表示は、動画のまわりに CROP_OVER ぶんの余白を付けた範囲（幅 5/3・高さ 5/3）。座標は元動画の px。
-
-const SRC_VIEW = { x: -VIDEO_W * CROP_OVER, y: -VIDEO_H * CROP_OVER, w: VIDEO_W * (1 + 2 * CROP_OVER), h: VIDEO_H * (1 + 2 * CROP_OVER) };
+// 枠は出来上がりと同じ形（9:16）で固定。「元の動画」の表示範囲は common.js の SRC_VIEW（動画の上下に広い余白がある）。
 
 function layoutCrop() {
   if (draft.clip.frame.mode !== "portrait") return;
@@ -238,12 +239,20 @@ function setupCropEditing() {
     return { x: SRC_VIEW.x + Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)) * SRC_VIEW.w,
              y: SRC_VIEW.y + Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)) * SRC_VIEW.h };
   };
-  const apply = c => { draft.clip.frame.crop = clampCrop(c); layoutCrop(); draw(); layoutMasks(); };
-  // 固定する角 anchor と動かす角 p から枠を作る。縦長すぎるときは高さを詰め、固定した角は動かさない
+  // 上より・中央・下より を選んでいる間は、上下の位置はその合わせ方で決まる（大きさを変えても合ったまま）
+  const apply = c => {
+    const f = draft.clip.frame;
+    f.crop = alignCrop(c, f.valign);
+    layoutCrop(); draw(); layoutMasks();
+  };
+  // 固定する角 anchor と動かす角 p から 9:16 の枠を作る。表示範囲からはみ出さない大きさまで
   const fromCorners = (anchor, p) => {
-    const w = Math.max(CROP_MIN_W, Math.abs(p.x - anchor.x));
-    const h = Math.min(Math.max(CROP_MIN_W * 0.25, Math.abs(p.y - anchor.y)), w * CROP_MAX_ASPECT);
-    return { x: p.x < anchor.x ? anchor.x - w : anchor.x, y: p.y < anchor.y ? anchor.y - h : anchor.y, w, h };
+    const left = p.x < anchor.x, up = p.y < anchor.y;
+    const roomW = left ? anchor.x - SRC_VIEW.x : SRC_VIEW.x + SRC_VIEW.w - anchor.x;
+    const roomH = up ? anchor.y - SRC_VIEW.y : SRC_VIEW.y + SRC_VIEW.h - anchor.y;
+    const want = Math.max(Math.abs(p.x - anchor.x), Math.abs(p.y - anchor.y) / CROP_RATIO);
+    const w = Math.max(CROP_MIN_W, Math.min(want, roomW, roomH / CROP_RATIO));
+    return { x: left ? anchor.x - w : anchor.x, y: up ? anchor.y - w * CROP_RATIO : anchor.y, w };
   };
   st.addEventListener("pointerdown", ev => {
     if (ev.button !== 0 || draft.clip.frame.mode !== "portrait") return;
@@ -262,7 +271,7 @@ function setupCropEditing() {
   st.addEventListener("pointermove", ev => {
     if (!drag) return;
     const p = toSrc(ev), c = draft.clip.frame.crop;
-    if (drag.kind === "move") apply({ x: p.x - drag.dx, y: p.y - drag.dy, w: c.w, h: c.h });
+    if (drag.kind === "move") apply({ x: p.x - drag.dx, y: p.y - drag.dy, w: c.w });
     else if (Math.abs(p.x - drag.anchor.x) > 8 || Math.abs(p.y - drag.anchor.y) > 8) apply(fromCorners(drag.anchor, p));
   });
   const finish = ev => {
@@ -532,6 +541,7 @@ async function saveRecording(tabId, r) {
   if (blob.size !== r.size) throw `録画データの受け渡しで大きさが合いません（${blob.size} / ${r.size}）`;
   const url = URL.createObjectURL(blob);
   try {
+    r.file = clipFileName(draft.clip, r.ext);
     const id = await chrome.downloads.download({ url, filename: "clip-maker/" + r.file, saveAs: false, conflictAction: "uniquify" });
     for (let i = 0; i < 300; i++) {   // 完了まで待つ（完了前に URL を破棄すると保存が途中で切れる）
       const [it] = await chrome.downloads.search({ id });
@@ -587,7 +597,8 @@ function renderAll() {
 }
 
 async function init() {
-  $("edver").textContent = "v" + chrome.runtime.getManifest().version;
+  $("edver").textContent = "v" + BUILD;
+  if (needsExtensionReload()) showReloadNotice(document.querySelector("main"), "更新するとこの編集画面は閉じます。YouTube のタブで Clip Maker を開き直してください（編集中の内容は残ります）。");
   const { draft: d } = await chrome.storage.local.get("draft");
   if (!d || !d.chat || !d.captions || !d.clip) {
     say("msg", "編集するデータがありません。YouTube のタブで Clip Maker を開き、「吸い出して編集画面を開く」からやり直してください。");
@@ -622,6 +633,7 @@ async function init() {
     persist(); renderCues(); draw();
   });
   $("save").addEventListener("click", makeVideo);
+  if (needsExtensionReload()) document.querySelectorAll("button").forEach(x => { if (!x.closest("#needreload")) x.disabled = true; });
 }
 
 init();

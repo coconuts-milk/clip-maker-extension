@@ -1,22 +1,36 @@
 // パネル / 編集画面 / content script で共有する定数・部品・描画（同じロジックを 2 箇所に持たない）。
 // 描画（drawClipFrame）は編集画面のプレビューと録画の両方がこれを使うので、プレビューで見たものがそのまま動画になる。
 
+// 部品の版。manifest.json の version と同じ値にする（e2e/check_panel.js が一致を確認する）。
+// Chrome は、YouTube のタブで動く部品（content.js など）と manifest を「拡張を読み込んだ時点」で覚え、
+// chrome://extensions の更新ボタンを押すまで使い続ける（タブを読み込み直しても変わらない＝2026-10-04 実機で確認）。
+// 一方、パネルと編集画面は開くたびに最新のファイルを読む。そのため、ファイルだけ差し替えて更新ボタンを押していないと、
+// 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
+// （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
+// 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
+const BUILD = "0.10.0";
+
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
 
 const VIDEO_W = 1920, VIDEO_H = 1080;        // 元動画の座標の基準（隠す四角はこの座標で持つ）
 const PORTRAIT_W = 1080, PORTRAIT_H = 1920;  // 縦（Shorts 9:16）
-// 縦: 元の動画の上に置く「囲み枠」。枠は動画の外へはみ出せる（はみ出した所は黒）。
-const CROP_OVER = 1 / 3;                     // はみ出せる量（動画の幅・高さに対する比）。編集画面は動画のまわりにこの分の余白を見せる
+// 縦: 元の動画の上に置く「囲み枠」。枠は出来上がりと同じ形（9:16）で固定。枠の中がそのまま出来上がりになる。
+// 枠は動画の外へはみ出せて、はみ出した所は黒。例: 枠の幅を動画の幅に合わせると、動画が横いっぱい・上下が黒になる。
+// SRC_VIEW: 編集画面で「元の動画」として見せる範囲（元動画の px）。枠が動ける範囲でもある。
+//   幅は動画の左右に 10% ずつの余白、高さはその幅の 9:16 の枠がちょうど入る高さ。
+const SRC_VIEW_W = VIDEO_W * 1.2, SRC_VIEW_H = SRC_VIEW_W * PORTRAIT_H / PORTRAIT_W;
+const SRC_VIEW = { x: (VIDEO_W - SRC_VIEW_W) / 2, y: (VIDEO_H - SRC_VIEW_H) / 2, w: SRC_VIEW_W, h: SRC_VIEW_H };
 const CROP_MIN_W = 240;                      // 枠の最小の幅（元動画の px）。これ以上小さいと拡大しすぎて絵が粗くなる
-const CROP_MAX_ASPECT = PORTRAIT_H / PORTRAIT_W;   // 枠の縦横比の上限（高さ ÷ 幅）。これを超えると出力の高さに入りきらない
-const DEFAULT_CROP = { x: (VIDEO_W - VIDEO_H) / 2, y: 0, w: VIDEO_H, h: VIDEO_H };   // 中央の正方形
+const CROP_RATIO = PORTRAIT_H / PORTRAIT_W;  // 枠の高さ ÷ 幅（固定）
+const DEFAULT_CROP_W = VIDEO_H;              // 最初の枠の幅 = 動画の高さ（中央の正方形が出来上がりの中央に入り、上下が黒）
 
 // ---- 設定の既定値 ----
 function defaultFrame(mode) {
-  // crop: 元の動画（1920×1080 基準）のどこを使うか。枠の幅が出力の幅いっぱいになるよう拡大し、余った上下は黒。
-  // valign: 切り出した絵を出力の 上・中央・下 のどこに置くか
-  if (mode === "portrait") return { mode, crop: { ...DEFAULT_CROP }, valign: "center" };
+  // crop: 元の動画（1920×1080 基準）の座標で表した 9:16 の枠。
+  // valign: 枠の上下の合わせ方。top = 動画の上端と枠の上端をそろえる（動画が上より・下が黒）、bottom = 下より、
+  //         center = 中央、free = 手で動かした位置のまま
+  if (mode === "portrait") return { mode, crop: alignCrop({ x: (VIDEO_W - DEFAULT_CROP_W) / 2, y: 0, w: DEFAULT_CROP_W }, "center"), valign: "center" };
   return { mode: "landscape" };
 }
 // コメント: 右から左に流す。top_pct/lanes = 流す帯の上端と行数。cross_sec = 画面を横切る秒数。
@@ -28,7 +42,7 @@ const DEFAULT_CAPTION = { font_pct: 6.9, bottom_pct: 7 };
 function normalizeClip(clip) {
   const f = clip.frame || {};
   clip.frame = f.mode === "portrait"
-    ? { mode: "portrait", crop: clampCrop(f.crop && Number.isFinite(f.crop.w) ? f.crop : DEFAULT_CROP), valign: ["top", "center", "bottom"].includes(f.valign) ? f.valign : "center" }
+    ? normalizePortrait(f)
     : { mode: "landscape" };
   clip.audio = clip.audio !== false;   // 音声を入れるか（既定: 入れる）
   const o = clip.chat_overlay || {};
@@ -163,34 +177,39 @@ function outSize(clip) {
 }
 
 // 出力の中で動画を置く矩形 {x, y, w, h}（出力の px）。縦は倍率・左右位置・上下ぞろえで決まり、動画の無い所は黒。
-// 囲み枠を使える範囲に収める: はみ出しは CROP_OVER まで、幅は CROP_MIN_W 以上、縦長すぎない
+// 囲み枠を使える範囲に収める: 形は 9:16 固定、幅は CROP_MIN_W〜SRC_VIEW の幅、位置は SRC_VIEW の中
 function clampCrop(c) {
-  const maxW = VIDEO_W * (1 + 2 * CROP_OVER), maxH = VIDEO_H * (1 + 2 * CROP_OVER);
-  let w = Math.min(maxW, Math.max(CROP_MIN_W, c.w));
-  let h = Math.min(maxH, Math.max(CROP_MIN_W * 0.25, c.h), w * CROP_MAX_ASPECT);
-  const x = Math.min(VIDEO_W * (1 + CROP_OVER) - w, Math.max(-VIDEO_W * CROP_OVER, c.x));
-  const y = Math.min(VIDEO_H * (1 + CROP_OVER) - h, Math.max(-VIDEO_H * CROP_OVER, c.y));
+  const w = Math.min(SRC_VIEW.w, Math.max(CROP_MIN_W, c.w)), h = w * CROP_RATIO;
+  const x = Math.min(SRC_VIEW.x + SRC_VIEW.w - w, Math.max(SRC_VIEW.x, c.x));
+  const y = Math.min(SRC_VIEW.y + SRC_VIEW.h - h, Math.max(SRC_VIEW.y, c.y));
   return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
 }
 
-// 縦のとき、切り出した絵が出力のどこに入るか {x, y, w, h}（出力の px）。横は出力全体。
-function contentRect(clip) {
-  const { W, H } = outSize(clip);
-  const f = clip.frame || {};
-  if (f.mode !== "portrait") return { x: 0, y: 0, w: W, h: H };
-  const h = Math.min(H, f.crop.h * W / f.crop.w);
-  const y = f.valign === "top" ? 0 : f.valign === "bottom" ? H - h : (H - h) / 2;
-  return { x: 0, y, w: W, h };
+// 枠の上下の位置を合わせ方どおりにする（free はそのまま）
+function alignCrop(c, valign) {
+  const h = c.w * CROP_RATIO;
+  const y = valign === "top" ? 0 : valign === "bottom" ? VIDEO_H - h : valign === "center" ? (VIDEO_H - h) / 2 : c.y;
+  return clampCrop({ x: c.x, y, w: c.w });
 }
 
-// 出力の中で動画全体を置く矩形 {x, y, w, h}（出力の px）。縦は囲み枠が contentRect に重なるように拡大・移動する。
-// 実際に見えるのは contentRect の中だけ（外は黒）。
+// 保存してあった縦の設定を今の形式にそろえる（古い形式・欠けた項目は既定値）
+function normalizePortrait(f) {
+  const valign = ["top", "center", "bottom", "free"].includes(f.valign) ? f.valign : "center";
+  const c = f.crop;
+  if (!c || !Number.isFinite(c.w) || !Number.isFinite(c.x)) return defaultFrame("portrait");
+  // v0.9.0 の枠は形が自由だった。幅と左右の位置はそのまま使い、上下は元の枠の中心に合わせて 9:16 にする
+  const is916 = Number.isFinite(c.h) && Math.abs(c.h / c.w - CROP_RATIO) < 0.01;
+  const y = is916 ? c.y : (Number.isFinite(c.y) && Number.isFinite(c.h) ? c.y + c.h / 2 - c.w * CROP_RATIO / 2 : 0);
+  return { mode: "portrait", crop: clampCrop({ x: c.x, y, w: c.w }), valign: is916 ? valign : "free" };
+}
+
+// 出力の中で動画全体を置く矩形 {x, y, w, h}（出力の px）。縦は「囲み枠 = 出力全体」になるように拡大・移動する。
 function videoRect(clip) {
   const { W, H } = outSize(clip);
   const f = clip.frame || {};
   if (f.mode !== "portrait") return { x: 0, y: 0, w: W, h: H };
-  const k = W / f.crop.w, c = contentRect(clip);
-  return { x: -f.crop.x * k, y: c.y - f.crop.y * k, w: VIDEO_W * k, h: VIDEO_H * k };
+  const k = W / f.crop.w;
+  return { x: -f.crop.x * k, y: -f.crop.y * k, w: VIDEO_W * k, h: VIDEO_H * k };
 }
 
 // 元動画の座標（1920×1080 基準）→ 出力の座標
@@ -276,16 +295,7 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
   const v = videoRect(clip);
-  if (source) {
-    // 縦は囲み枠の中だけ見せる（枠の外の絵が上下の黒い所にはみ出さないようにする）
-    const c = contentRect(clip);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(c.x, c.y, c.w, c.h);
-    ctx.clip();
-    ctx.drawImage(source, v.x, v.y, v.w, v.h);
-    ctx.restore();
-  }
+  if (source) ctx.drawImage(source, v.x, v.y, v.w, v.h);   // 縦は枠の外が canvas の外になるので、そのまま描けば枠どおりに切れる
 
   // 隠す四角
   ctx.fillStyle = "#000";
@@ -337,33 +347,61 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
   }
 }
 
-// ---- 通信 ----
-// 旧バージョン検出時の案内文（「パッケージ化されていない拡張」はファイルを差し替えても
-// 🔄を押すまで YouTube タブ側が旧版のまま動く）。
-function verErrorMsg(pageVer) {
-  return `旧バージョンの部品が動いています（ページ側 ${pageVer || "不明（旧版）"} / 本体 ${chrome.runtime.getManifest().version}）。\n` +
-         "YouTube のタブを再読み込み（F5）してから、もう一度お試しください。";
+// 保存する動画のファイル名: 作った日時_縦横_音の有無。例: 20261004_153045_short_sound_off.mp4
+function clipFileName(clip, ext, now) {
+  const d = now || new Date();
+  const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  return `${stamp}_${clip.frame.mode === "portrait" ? "short" : "horizon"}_${clip.audio ? "sound_on" : "sound_off"}.${ext}`;
 }
 
-// タブの content script へメッセージを送る。生きた content script が無いタブ
-// （拡張を入れる前から開いていた／拡張の更新直後）には部品をその場で注入して 1 回だけ再試行する。
+// ---- 版の食い違い ----
+// 拡張の本体（Chrome が覚えている版）が、今のファイルより古いか
+function needsExtensionReload() {
+  return chrome.runtime.getManifest().version !== BUILD;
+}
+const NEED_RELOAD_MSG = "拡張機能の更新が必要です。「拡張を更新する」を押してください。";
+
+// 「更新が必要」の案内とボタンを host の先頭に出す。押すと拡張が自分で読み込み直される（開いているパネル・編集画面は閉じる）
+function showReloadNotice(host, note) {
+  const box = document.createElement("div");
+  box.id = "needreload";
+  box.style.cssText = "background:#fff4d6;border:2px solid #e0a800;border-radius:8px;padding:12px 14px;margin-bottom:14px;font-size:16px;line-height:1.6";
+  const p = document.createElement("div");
+  p.textContent = "拡張機能が新しくなっています。更新するまで正しく動きません。" + (note || "");
+  const b = document.createElement("button");
+  b.className = "primary";
+  b.style.marginTop = "8px";
+  b.textContent = "拡張を更新する";
+  b.addEventListener("click", () => chrome.runtime.reload());
+  box.appendChild(p);
+  box.appendChild(b);
+  // 古い部品に命令を送らないよう、ほかのボタンは押せなくする
+  document.querySelectorAll("button").forEach(x => { x.disabled = true; });
+  host.insertBefore(box, host.firstChild);
+}
+
+// ---- 通信 ----
+// YouTube のタブで動く部品（content.js）へメッセージを送る。部品が居ないタブ
+// （拡張を入れる前から開いていた／拡張の更新直後）には、その場で入れてから送り直す。
 async function messageWithInject(tabId, req) {
+  if (needsExtensionReload()) throw NEED_RELOAD_MSG;
   let r;
   try { r = await chrome.tabs.sendMessage(tabId, req); } catch (_) { r = undefined; }
-  if (r !== undefined) return r;
-  try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["inject.js"], world: "MAIN" });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["common.js", "content.js"] });
-    r = await chrome.tabs.sendMessage(tabId, req);
-  } catch (_2) { throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度お試しください。"; }
-  if (r === undefined) throw verErrorMsg(undefined);
+  if (r === undefined) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["inject.js"], world: "MAIN" });
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["common.js", "content.js"] });
+      r = await chrome.tabs.sendMessage(tabId, req);
+    } catch (_2) { r = undefined; }
+  }
+  if (r === undefined) throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度お試しください。";
   return r;
 }
 
-// content script の応答を検証する。error はそのまま投げ、旧バージョンの部品が動いていたら案内する。
+// 応答を検証する。error はそのまま投げる。相手の版が違うとき（古い部品が残っているタブ）は読み込み直しを案内する
 function assertVer(r) {
-  if (r === undefined || r === null) throw verErrorMsg(undefined);
+  if (r === undefined || r === null) throw "ページと通信できません。YouTube のタブを再読み込み（F5）してからもう一度お試しください。";
   if (r.error) throw r.error;
-  if (r.ver !== chrome.runtime.getManifest().version) throw verErrorMsg(r.ver);
+  if (r.build !== BUILD) throw "YouTube のタブで古い部品が動いています。YouTube のタブを再読み込み（F5）してから、もう一度お試しください。";
   return r;
 }

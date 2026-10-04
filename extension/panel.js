@@ -17,7 +17,8 @@ async function nowTime() {
   return assertVer(await messageWithInject(tab.id, { type: "CLIP_GET_TIME" }));
 }
 
-$("ver").textContent = "v" + chrome.runtime.getManifest().version;
+$("ver").textContent = "v" + BUILD;
+if (needsExtensionReload()) showReloadNotice(document.body, "更新するとこのパネルは一度閉じます。もう一度アイコンを押して開いてください。");
 
 let range;
 const startTI = createTimeInput($("start"), () => range.onStartInput());
@@ -30,6 +31,7 @@ range = setupRangeControl(startTI, endTI, $("length"), () => {
 (async () => {
   const { panelLength } = await chrome.storage.local.get("panelLength");
   $("length").value = Number(panelLength) > 0 ? String(panelLength) : String(DEFAULT_LEN_SEC);
+  if (needsExtensionReload()) return;
   try { const r = await nowTime(); range.setStart(r.t); } catch (e) { say(String(e)); }
 })();
 

@@ -317,10 +317,8 @@ async function recordClip(v, clip, cues, chat) {
     const blob = new Blob(chunks, { type: mime.split(";")[0] });
     if (!blob.size) throw new Error("録画データが空でした");
     const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
-    const p = splitTime(clip.start_sec);
-    const file = `clip_${clip.video_id}_${pad2(p.h)}h${pad2(p.m)}m${pad2(p.s)}s_${clip.frame.mode === "portrait" ? "tate" : "yoko"}${clip.audio ? "" : "_otonashi"}.${ext}`;
     lastRecording = { id: String(Date.now()), blob };
-    return { id: lastRecording.id, size: blob.size, mime: blob.type, file, ext, sec: +total.toFixed(1), mb: +(blob.size / 1048576).toFixed(1) };
+    return { id: lastRecording.id, size: blob.size, mime: blob.type, ext, sec: +total.toFixed(1), mb: +(blob.size / 1048576).toFixed(1) };
   } finally {
     if (banner) banner.remove();
     if (rec && rec.state !== "inactive") { try { rec.stop(); } catch (_) { /* 既に停止 */ } }
@@ -332,14 +330,21 @@ async function recordClip(v, clip, cues, chat) {
   }
 }
 
+// 広告の再生中は <video> が広告の映像になっている。そのまま吸い出し・録画すると広告を切り抜いてしまう
+function adPlaying() {
+  const p = document.getElementById("movie_player");
+  return !!(p && (p.classList.contains("ad-showing") || p.classList.contains("ad-interrupting")));
+}
+const AD_MSG = "広告の再生中です。広告が終わってから、もう一度押してください。";
+
 // ---- メッセージ ----
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  const ver = chrome.runtime.getManifest().version;
+  const build = BUILD;   // 相手（パネル・編集画面）が版の食い違いを見つけるために、すべての応答に付ける
   const v = document.querySelector("video");
 
   if (msg.type === "CLIP_GET_TIME") {
     if (!v || !videoId()) { sendResponse({ error: "YouTube の動画ページで使ってください" }); return; }
-    sendResponse({ ver, t: v.currentTime, paused: v.paused, muted: v.muted || v.volume === 0, duration: v.duration, video_id: videoId() });
+    sendResponse({ build, t: v.currentTime, paused: v.paused, muted: v.muted || v.volume === 0, duration: v.duration, video_id: videoId(), ready: v.readyState >= 1 });
     return;
   }
   if (msg.type === "CLIP_PLAY") {
@@ -357,31 +362,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (v.currentTime >= msg.end) v.pause();
       }
     }, 50);
-    sendResponse({ ver, ok: true });
+    sendResponse({ build, ok: true });
     return;
   }
   if (msg.type === "CLIP_PAUSE") {
     if (v && !recording) { clearInterval(window.__clipPlayTimer); v.pause(); }
-    sendResponse({ ver, ok: true });
+    sendResponse({ build, ok: true });
     return;
   }
   if (msg.type === "CLIP_GET_CHUNK") {
     if (!lastRecording || lastRecording.id !== msg.id) { sendResponse({ error: "録画データが見つかりません。もう一度「動画を作る」を押してください" }); return; }
     blobChunkBase64(lastRecording.blob, msg.offset, msg.length)
-      .then(b64 => sendResponse({ ver, b64 }))
+      .then(b64 => sendResponse({ build, b64 }))
       .catch(e => sendResponse({ error: `録画データの受け渡しに失敗しました: ${e && e.message ? e.message : e}` }));
     return true;
   }
   if (msg.type === "CLIP_RELEASE") {
     if (lastRecording && lastRecording.id === msg.id) lastRecording = null;   // メモリ解放
-    sendResponse({ ver, ok: true });
+    sendResponse({ build, ok: true });
     return;
   }
   if (msg.type === "CLIP_RENDER") {
     (async () => {
       if (!v || videoId() !== msg.clip.video_id) { sendResponse({ error: "切り抜き元の動画を開いている YouTube タブで実行してください" }); return; }
+      if (adPlaying()) { sendResponse({ error: AD_MSG }); return; }
       const r = await recordClip(v, msg.clip, msg.cues || [], msg.chat || []);
-      sendResponse({ ver, ...r });
+      sendResponse({ build, ...r });
     })().catch(e => sendResponse({ error: `動画を作れませんでした: ${e && e.message ? e.message : e}` }));
     return true;
   }
@@ -389,6 +395,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     const id = videoId();
     if (!v || !id) { sendResponse({ error: "YouTube の動画ページで使ってください" }); return; }
+    if (adPlaying()) { sendResponse({ error: AD_MSG }); return; }
     const start = msg.start;
     if (!Number.isFinite(start) || !Number.isFinite(msg.end)) { sendResponse({ error: "開始と終了の時間を入れてください" }); return; }
     if (msg.end <= start) { sendResponse({ error: "終了は開始より後にしてください" }); return; }
@@ -401,7 +408,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const frames = msg.withFrames ? await captureFrames(v, start, end) : undefined;
     const chat = await collectChat(v, start, end);
     sendResponse({
-      ver,
+      build,
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title, start_sec: +start.toFixed(3), end_sec: +end.toFixed(3) },
       captions, chat, frames,
     });

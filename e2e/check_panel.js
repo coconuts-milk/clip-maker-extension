@@ -18,7 +18,12 @@ const EXT = path.resolve(__dirname, "..", "extension");
       popup: await chrome.action.getPopup({}),
     }));
     console.log(JSON.stringify(r));
-    ok = r.behavior.openPanelOnActionClick === true && /panel\.html$/.test(r.options.path || "") && r.popup === "";
+    // 部品の版（common.js の BUILD）が manifest の version と同じか。違うと版の食い違いの検出が当てにならない
+    const fs = require("fs");
+    const build = (fs.readFileSync(path.join(EXT, "common.js"), "utf8").match(/const BUILD = "([^"]+)";/) || [])[1];
+    const version = JSON.parse(fs.readFileSync(path.join(EXT, "manifest.json"), "utf8")).version;
+    console.log(JSON.stringify({ build, version }));
+    ok = r.behavior.openPanelOnActionClick === true && /panel\.html$/.test(r.options.path || "") && r.popup === "" && build === version;
   } catch (e) { console.log("ERROR", e && e.stack ? e.stack : e); }
   finally { await browser.close(); }
   console.log(ok ? "PANEL_OK" : "PANEL_FAIL");

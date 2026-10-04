@@ -20,7 +20,7 @@
   .opt input[type=range] { width: 100%; }
   .opt .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--sub); }
   .choice { display: flex; gap: 8px; flex-wrap: wrap; }
-  .choice label { border: 1px solid #999; border-radius: 6px; padding: 6px 14px; cursor: pointer; background: #fff; }
+  .choice label { border: 1px solid #999; border-radius: 6px; padding: 6px 12px; cursor: pointer; background: #fff; }
   .choice input { position: absolute; opacity: 0; pointer-events: none; }
   .choice label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .check { display: flex; align-items: center; gap: 8px; font-size: 17px; }
@@ -30,12 +30,13 @@
   /* プレビュー */
   #stagewrap { display: flex; justify-content: center; align-items: center; gap: 12px; background: #222; border-radius: 6px; padding: 8px; }
   /* 縦のときだけ出す「元の動画」。動画のまわりに余白を見せて、囲み枠を動画の外まで広げられるようにする */
-  #srcwrap { flex: 1 1 0; min-width: 0; }
+  #srcwrap { flex: 0 0 auto; }
   .srccap { color: #fff; font-size: 15px; margin-bottom: 6px; }
   .srccap.sub { color: #bbb; font-size: 14px; margin: 6px 0 0; }
-  #srcstage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; overflow: hidden; touch-action: none; user-select: none; cursor: crosshair;
+  #stagewrap { gap: 28px; flex-wrap: wrap; }
+  #srcstage { position: relative; height: min(70vh, 720px); aspect-ratio: 9 / 16; background: #000; overflow: hidden; touch-action: none; user-select: none; cursor: crosshair;
               background-image: repeating-linear-gradient(45deg, #1b1b1b 0 10px, #111 10px 20px); }
-  #srcimg { position: absolute; left: 20%; top: 20%; width: 60%; height: 60%; pointer-events: none; }
+  #srcimg { position: absolute; left: 8.3333%; top: 36.8164%; width: 83.3333%; height: 26.3672%; pointer-events: none; }
   #cropbox { position: absolute; border: 3px solid #ffd400; box-sizing: border-box; cursor: move; box-shadow: 0 0 0 9999px rgba(0,0,0,.55); }
   #cropbox .h { position: absolute; width: 18px; height: 18px; background: #ffd400; border: 2px solid #000; border-radius: 3px; }
   #cropbox .h.nw { left: -10px; top: -10px; cursor: nwse-resize; }
@@ -116,11 +117,12 @@
         </div>
         <div id="portraitopts">
           <div class="opt"><span>上下の位置</span>
-            <div class="choice">
+            <div class="choice" style="grid-column: 2 / 4">
               <label><input type="radio" name="valign" value="top"> 上より</label>
               <label><input type="radio" name="valign" value="center"> 中央</label>
               <label><input type="radio" name="valign" value="bottom"> 下より</label>
-            </div><span></span></div>
+              <label><input type="radio" name="valign" value="free"> 自由</label>
+            </div></div>
         </div>
       </section>
 
@@ -156,9 +158,9 @@
         <h2>② 出来上がり</h2>
         <div id="stagewrap">
           <div id="srcwrap" class="hidden">
-            <div class="srccap">元の動画 — 黄色い枠で使う所を囲む</div>
+            <div class="srccap">元の動画 — 黄色い枠の中が出来上がり</div>
             <div id="srcstage"><img id="srcimg" alt=""><div id="cropbox"><div class="h nw" data-h="nw"></div><div class="h ne" data-h="ne"></div><div class="h sw" data-h="sw"></div><div class="h se" data-h="se"></div></div></div>
-            <div class="srccap sub">枠は掴んで移動・角で大きさ変更。動画の外まで広げた所と、枠の上下は黒になります。</div>
+            <div class="srccap sub">枠は掴んで移動・角で大きさ変更。<br>動画の外は黒になります。</div>
           </div>
           <div id="stage" class="landscape"><canvas id="pv"></canvas><div id="ov"></div><div id="stagemsg"></div></div>
         </div>
