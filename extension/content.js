@@ -191,14 +191,22 @@ async function captureFrames(v, start, end) {
 }
 
 // ---- 動画を作る（拡張だけで完結） ----
-// 再生中の <video> を canvas に描き、その上に四角・コメント・字幕を重ねて MediaRecorder で録画する。
+// 再生中の <video> を canvas に描き、その上に四角・コメント・字幕を重ねて録画する。
 // 実時間で再生しながら録るので、60 秒の切り抜きは 60 秒かかる。音声は <video> の captureStream から取る。
 // 描画は common.js の drawClipFrame（編集画面のプレビューと同じ関数）。
+//
+// 録画の方式は 2 つ:
+//  (A) WebCodecs（VideoEncoder / AudioEncoder）+ 自前の mp4 組み立て（mp4.js）。コマごとに元動画の時刻をそのまま書くので
+//      コマの間隔が揃う。ふつうの mp4 になる。Chrome / Edge の PC 版で使える。
+//  (B) MediaRecorder。(A) が使えないブラウザ向け。コマの時刻が取り込み時の時計で付くため間隔が少し揺れる。
 
 const REC_FPS = 30;              // 動画のコマに合わせた取り込みが使えないブラウザでの取り込み間隔
 const REC_WATCH_MS = 200;        // 録画の終了・異常を見張る間隔
 const REC_VIDEO_BPS = 8000000;   // 1080p30 の H.264 で破綻しない実用値
 const REC_AUDIO_BPS = 192000;
+const REC_KEYFRAME_US = 2000000;   // キーフレームの間隔（2 秒。シークのしやすさと大きさのバランス）
+const REC_STALL_US = 150000;       // 再生が止まった（読み込み待ち）とみなす、時計と動画の時刻のずれ。これを超えたぶん映像の時刻を遅らせて音声と合わせる
+const REC_QUEUE_MAX = 30;          // エンコードの待ち行列がこれを超えたらコマを落とす（落とした数は知らせる）
 // mp4 を優先。録れない環境だけ webm（拡張子も webm にして、別形式を mp4 と偽らない）
 const REC_MIMES = ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4",
                    "video/webm;codecs=h264,opus", "video/webm;codecs=vp9,opus", "video/webm"];
@@ -241,29 +249,13 @@ function blobChunkBase64(blob, offset, length) {
 
 // 録画して Blob を保持する。保存は編集画面が拡張のダウンロード機能で行う
 // （ページ側の <a download> は 2 本目以降が Chrome の「複数ファイルのダウンロード」制限で止まる＝2026-09-28 実機で確認）。
-async function recordClip(v, clip, cues, chat) {
-  if (recording) throw new Error("いま別の録画が進行中です。終わってからもう一度押してください");
-  if (!v.videoWidth || !v.videoHeight) throw new Error("動画がまだ読み込まれていません。少し再生してからもう一度お試しください");
-  if (typeof v.captureStream !== "function" || typeof MediaRecorder === "undefined") throw new Error("このブラウザは録画に対応していません（PC 版の Chrome / Edge で使ってください）");
+async function recordWithMediaRecorder(v, clip, cues, chat, ctx, banner, total) {
+  if (typeof MediaRecorder === "undefined") throw new Error("このブラウザは録画に対応していません（PC 版の Chrome / Edge で使ってください）");
   const mime = REC_MIMES.find(m => MediaRecorder.isTypeSupported(m));
   if (!mime) throw new Error("このブラウザで録画できる動画形式がありません");
-  normalizeClip(clip);
-  const { W, H } = outSize(clip);
-  const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext("2d");
-  const total = clip.end_sec - clip.start_sec;
-
-  const orig = { t: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume, rate: v.playbackRate };
-  recording = true;
-  let rec, banner;
+  const canvas = ctx.canvas;
+  let rec;
   try {
-    v.pause();
-    v.playbackRate = 1;
-    if (clip.audio) v.muted = false;   // 音声を入れるとき、ミュートのままだと無音の動画になる
-    await seekTo(v, clip.start_sec);
-    drawClipFrame(ctx, v, clip, cues, chat, 0);
-    banner = showRecBanner(total);
 
     // 取り込み方: 動画の新しいコマが画面に出るたびに 1 枚描いて 1 枚取り込む（requestVideoFrameCallback + requestFrame）。
     // 一定間隔で取り込む方式は、動画のコマと取り込みのタイミングがずれてコマが飛ぶ
@@ -316,12 +308,180 @@ async function recordClip(v, clip, cues, chat) {
 
     const blob = new Blob(chunks, { type: mime.split(";")[0] });
     if (!blob.size) throw new Error("録画データが空でした");
-    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
-    lastRecording = { id: String(Date.now()), blob };
-    return { id: lastRecording.id, size: blob.size, mime: blob.type, ext, sec: +total.toFixed(1), mb: +(blob.size / 1048576).toFixed(1) };
+    return { blob, ext: mime.startsWith("video/mp4") ? "mp4" : "webm", method: "MediaRecorder", dropped: 0 };
+  } finally {
+    if (rec && rec.state !== "inactive") { try { rec.stop(); } catch (_) { /* 既に停止 */ } }
+  }
+}
+
+// (A) WebCodecs。使えるかを先に確かめる。使えない理由は文字列で返す（使えるときは設定を返す）
+async function webCodecsSupport(W, H, audio) {
+  if (!("VideoEncoder" in window) || !("VideoFrame" in window)) return { why: "VideoEncoder が無い" };
+  // High プロファイル・レベル 4.2（1920×1080 の 60 コマ/秒まで）
+  const vcfg = { codec: "avc1.64002A", width: W, height: H, bitrate: REC_VIDEO_BPS, framerate: 30, avc: { format: "avc" },
+                 latencyMode: "realtime", hardwareAcceleration: "no-preference" };
+  let vs;
+  try { vs = await VideoEncoder.isConfigSupported(vcfg); } catch (e) { return { why: `映像の設定が通らない: ${e.message}` }; }
+  if (!vs.supported) return { why: "H.264 のエンコードに対応していない" };
+  if (audio) {
+    if (!("AudioEncoder" in window) || !("MediaStreamTrackProcessor" in window)) return { why: "AudioEncoder が無い" };
+    try {
+      const as = await AudioEncoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2, bitrate: REC_AUDIO_BPS, aac: { format: "aac" } });
+      if (!as.supported) return { why: "AAC のエンコードに対応していない" };
+    } catch (e) { return { why: `音声の設定が通らない: ${e.message}` }; }
+  }
+  return { vcfg };
+}
+
+// AAC の AudioSpecificConfig（2 バイト）。エンコーダが description を返さないときの代わり
+function aacConfig(sampleRate, channels) {
+  const rates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+  const idx = Math.max(0, rates.indexOf(sampleRate));
+  return new Uint8Array([(2 << 3) | (idx >> 1), ((idx & 1) << 7) | (channels << 3)]);   // AAC LC
+}
+
+async function recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, vcfg) {
+  const { W, H } = outSize(clip);
+  const canvas = ctx.canvas;
+  const vSamples = [], aSamples = [];
+  let vDesc = null, aDesc = null, aRate = 0, aCh = 0;
+  let dropped = 0, encErr = null;
+
+  const venc = new VideoEncoder({
+    output: (chunk, meta) => {
+      if (meta && meta.decoderConfig && meta.decoderConfig.description) vDesc = meta.decoderConfig.description;
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      vSamples.push({ ts: chunk.timestamp, dur: chunk.duration || 0, key: chunk.type === "key", data });
+    },
+    error: e => { encErr = encErr || e; },
+  });
+  venc.configure(vcfg);
+
+  // 音声: 取り出したブロックをそのままエンコーダへ。a0（映像の最初のコマの時点の音声の時刻）より前は捨てる
+  let aenc = null, reader = null, a0 = null;
+  let latestAudio = null;   // {ts, dur, at} 最後に届いた音声ブロック
+  if (clip.audio) {
+    const track = v.captureStream().getAudioTracks()[0];
+    if (!track) throw new Error("この動画から音声を取り出せませんでした");
+    reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    (async () => {
+      for (;;) {
+        const { value: data, done } = await reader.read();
+        if (done || !data) break;
+        const dur = data.numberOfFrames / data.sampleRate * 1e6;
+        latestAudio = { ts: data.timestamp, dur, at: performance.now() };
+        if (!aenc) {
+          aRate = data.sampleRate; aCh = data.numberOfChannels;
+          aenc = new AudioEncoder({
+            output: (chunk, meta) => {
+              if (meta && meta.decoderConfig && meta.decoderConfig.description) aDesc = meta.decoderConfig.description;
+              if (a0 === null) return;
+              const ts = chunk.timestamp - a0;
+              if (ts < 0) return;   // 映像が始まる前のぶん
+              const d = new Uint8Array(chunk.byteLength);
+              chunk.copyTo(d);
+              aSamples.push({ ts, dur: chunk.duration || 0, data: d });
+            },
+            error: e => { encErr = encErr || e; },
+          });
+          aenc.configure({ codec: "mp4a.40.2", sampleRate: aRate, numberOfChannels: aCh, bitrate: REC_AUDIO_BPS, aac: { format: "aac" } });
+        }
+        if (a0 !== null && data.timestamp + dur > a0 && aenc.state === "configured") aenc.encode(data);
+        data.close();
+      }
+    })().catch(e => { encErr = encErr || e; });
+  }
+
+  // 映像: 新しいコマが画面に出るたびに 1 枚。時刻は元動画の時刻（mediaTime）から付けるので間隔が揃う。
+  // 読み込み待ちで再生が止まると時計だけ進むので、そのぶんを stall に足して音声とずれないようにする
+  let m0 = null, t0 = 0, stall = 0, lastTs = -1, lastKey = -Infinity, lastT = 0;
+  await v.play();
+  await new Promise((resolve, reject) => {
+    const tStart = Date.now(), limit = total * 1000 * 3 + 15000;
+    let done = false, watch = null;
+    const finish = (fn, arg) => { if (done) return; done = true; clearInterval(watch); fn(arg); };
+    const onFrame = (now, meta) => {
+      if (done) return;
+      if (meta.mediaTime >= clip.end_sec) { finish(resolve); return; }
+      if (m0 === null) {
+        m0 = meta.mediaTime; t0 = now;
+        a0 = latestAudio ? latestAudio.ts + latestAudio.dur + (now - latestAudio.at) * 1000 : 0;   // 今この瞬間の音声の時刻
+      }
+      const media = (meta.mediaTime - m0) * 1e6, wall = (now - t0) * 1000;
+      if (wall - (media + stall) > REC_STALL_US) stall = wall - media;
+      const ts = Math.round(media + stall);
+      lastT = Math.max(0, meta.mediaTime - clip.start_sec);
+      drawClipFrame(ctx, v, clip, cues, chat, lastT);
+      if (ts > lastTs) {
+        if (venc.encodeQueueSize > REC_QUEUE_MAX) dropped++;
+        else {
+          const frame = new VideoFrame(canvas, { timestamp: ts });
+          const key = ts - lastKey >= REC_KEYFRAME_US;
+          if (key) lastKey = ts;
+          venc.encode(frame, { keyFrame: key });
+          frame.close();
+          lastTs = ts;
+        }
+      }
+      if (encErr) { finish(reject, encErr); return; }
+      v.requestVideoFrameCallback(onFrame);
+    };
+    v.requestVideoFrameCallback(onFrame);
+    watch = setInterval(() => {
+      banner.update(lastT);
+      if (v.currentTime >= clip.end_sec || v.ended) finish(resolve);
+      else if (Date.now() - tStart > limit) finish(reject, new Error("録画が時間内に終わりませんでした（動画の読み込みが止まっていないか確認してください）"));
+      else if (document.hidden) finish(reject, new Error("録画中に YouTube のタブが隠れました。録画中はタブを移動しないでください"));
+    }, REC_WATCH_MS);
+  });
+  v.pause();
+  if (reader) { try { await reader.cancel(); } catch (_) { /* 既に閉じた */ } }
+  await venc.flush();
+  venc.close();
+  if (aenc) { await aenc.flush(); aenc.close(); }
+  if (encErr) throw encErr;
+  if (!vSamples.length) throw new Error("映像のコマを 1 枚も取り込めませんでした");
+  if (!vDesc) throw new Error("映像の設定情報（avcC）が取れませんでした");
+  vSamples.sort((x, y) => x.ts - y.ts);
+  // 最後のコマの長さは 1 つ前の間隔と同じにする
+  if (vSamples.length >= 2) vSamples[vSamples.length - 1].dur = vSamples[vSamples.length - 1].ts - vSamples[vSamples.length - 2].ts;
+  const audio = clip.audio && aSamples.length ? { samples: aSamples, description: aDesc || aacConfig(aRate, aCh), sampleRate: aRate, channels: aCh } : null;
+  if (clip.audio && !audio) throw new Error("音声を 1 つも取り込めませんでした");
+  const bytes = buildMp4({ video: { samples: vSamples, description: vDesc, width: W, height: H }, audio });
+  return { blob: new Blob([bytes], { type: "video/mp4" }), ext: "mp4", method: "WebCodecs", dropped, frames: vSamples.length };
+}
+
+// 録画の入口。準備（停止・位置合わせ・案内）と後片付け（元の状態に戻す）はここで行い、取り込みは (A) か (B) に任せる
+async function recordClip(v, clip, cues, chat) {
+  if (recording) throw new Error("いま別の録画が進行中です。終わってからもう一度押してください");
+  if (!v.videoWidth || !v.videoHeight) throw new Error("動画がまだ読み込まれていません。少し再生してからもう一度お試しください");
+  if (typeof v.captureStream !== "function" || typeof v.requestVideoFrameCallback !== "function") throw new Error("このブラウザは録画に対応していません（PC 版の Chrome / Edge で使ってください）");
+  normalizeClip(clip);
+  const { W, H } = outSize(clip);
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const total = clip.end_sec - clip.start_sec;
+  const wc = await webCodecsSupport(W, H, clip.audio);
+
+  const orig = { t: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume, rate: v.playbackRate };
+  recording = true;
+  let banner;
+  try {
+    v.pause();
+    v.playbackRate = 1;
+    if (clip.audio) v.muted = false;   // 音声を入れるとき、ミュートのままだと無音の動画になる
+    await seekTo(v, clip.start_sec);
+    drawClipFrame(ctx, v, clip, cues, chat, 0);
+    banner = showRecBanner(total);
+    const r = wc.vcfg ? await recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, wc.vcfg)
+                      : await recordWithMediaRecorder(v, clip, cues, chat, ctx, banner, total);
+    lastRecording = { id: String(Date.now()), blob: r.blob };
+    return { id: lastRecording.id, size: r.blob.size, mime: r.blob.type, ext: r.ext, method: r.method, why: wc.why, dropped: r.dropped, frames: r.frames,
+             sec: +total.toFixed(1), mb: +(r.blob.size / 1048576).toFixed(1) };
   } finally {
     if (banner) banner.remove();
-    if (rec && rec.state !== "inactive") { try { rec.stop(); } catch (_) { /* 既に停止 */ } }
     v.pause();
     v.muted = orig.muted; v.volume = orig.volume; v.playbackRate = orig.rate;
     v.currentTime = orig.t;

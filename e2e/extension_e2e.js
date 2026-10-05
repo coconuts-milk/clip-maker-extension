@@ -39,6 +39,14 @@ function streamsOf(file) {
   const { execFileSync } = require("child_process");
   return execFileSync(tool("ffprobe"), ["-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file], { encoding: "utf8" }).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 }
+// コマの間隔: {fps, longGaps(50ms 超の数), maxGapMs, frames}
+function frameGaps(file) {
+  const { execFileSync } = require("child_process");
+  const out = execFileSync(tool("ffprobe"), ["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", file], { encoding: "utf8", maxBuffer: 1 << 26 });
+  const pts = out.split(/\r?\n/).map(x => x.trim().replace(/,$/, "")).filter(Boolean).map(Number);
+  const gaps = pts.slice(1).map((t, i) => t - pts[i]);
+  return { frames: pts.length, fps: +((pts.length - 1) / (pts[pts.length - 1] - pts[0])).toFixed(2), longGaps: gaps.filter(g => g > 0.05).length, maxGapMs: +(Math.max(...gaps) * 1000).toFixed(1) };
+}
 // 動画の t 秒のコマから、横いっぱい・高さ 40px の帯（上端が y）を取り、明るさの平均（0〜255）を返す
 function bandBrightness(file, t, y) {
   const { execFileSync } = require("child_process");
@@ -294,6 +302,9 @@ async function waitVideoFile(since, tag, timeoutMs) {
       check(`録画が終わったら表示が消える（${mode}）`, bannerGone);
       files.push(file);
       if (file) {
+        check(`コマごとに時刻を指定する方式（WebCodecs）で録画できた（${mode}）`, !msg.includes("揺れる方式") && !msg.includes("コマ落ち"), msg.replace(/\n/g, " "));
+        const g = frameGaps(file);
+        check(`コマの間隔が揃っている（${mode}）`, g.longGaps === 0 && g.fps >= 29 && g.fps <= 61 && g.frames > LEN * 25, g);
         const st = streamsOf(file);
         if (mode === "landscape") check("音あり: 動画に音声が入っている", st.includes("video") && st.includes("audio"), st);
         else {
@@ -310,6 +321,8 @@ async function waitVideoFile(since, tag, timeoutMs) {
   } finally {
     await browser.close();
     restoreCommon();
+    // 自分が作った動画だけ消す（ユーザーの動画と同じフォルダに出るので、名前のパターンでまとめて消してはいけない）。残すなら KEEP=1
+    if (!process.env.KEEP) for (const f of files) if (f && fs.existsSync(f)) fs.unlinkSync(f);
   }
   const ng = checks.filter(c => !c.ok);
   console.log(ng.length ? `E2E_FAIL (${ng.length} 件: ${ng.map(c => c.name).join(" / ")})` : `E2E_OK (${checks.length} 件)`);

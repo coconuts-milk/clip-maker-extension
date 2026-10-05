@@ -573,7 +573,10 @@ async function makeVideo() {
     if (me) await chrome.tabs.update(me.id, { active: true });
     say("msg", "保存中…", "busy");
     await saveRecording(tab.id, r);
-    say("msg", `動画ができました。\nダウンロード ＞ clip-maker ＞ ${r.file}` + (r.ext === "webm" ? "\n（このブラウザは mp4 で録画できないため webm 形式です）" : ""), "ok");
+    const warn = (r.method !== "WebCodecs" ? `\n（この環境ではコマの間隔が揺れる方式で録画しました: ${r.why || ""}）` : "") +
+                 (r.dropped ? `\n（処理が追いつかず ${r.dropped} コマ落ちました）` : "") +
+                 (r.ext === "webm" ? "\n（このブラウザは mp4 で録画できないため webm 形式です）" : "");
+    say("msg", `動画ができました。\nダウンロード ＞ clip-maker ＞ ${r.file}` + warn, warn ? "bad" : "ok");
   } catch (e) {
     say("msg", String(e));
   } finally {
