@@ -28,9 +28,18 @@ range = setupRangeControl(startTI, endTI, $("length"), () => {
   try { range.read(); say("", "ok"); } catch (e) { if (startTI.get() !== null && endTI.get() !== null) say(String(e)); }
 });
 
+// 字幕の作り方: YouTube の字幕をそのまま使う / 音声認識で作る（精度は上がるが、音声の取り込みに切り抜きと同じ時間がかかる）
+const subsrc = () => (document.querySelector("input[name=subsrc]:checked") || {}).value || "youtube";
+function showSubNote() {
+  $("subnote").textContent = subsrc() === "asr" ? "音声の取り込みに切り抜きと同じ時間がかかります。認識は編集画面で行います。" : "";
+}
+document.querySelectorAll("input[name=subsrc]").forEach(el => el.addEventListener("change", () => { chrome.storage.local.set({ panelSubsrc: el.value }); showSubNote(); }));
+
 (async () => {
-  const { panelLength } = await chrome.storage.local.get("panelLength");
+  const { panelLength, panelSubsrc } = await chrome.storage.local.get(["panelLength", "panelSubsrc"]);
   $("length").value = Number(panelLength) > 0 ? String(panelLength) : String(DEFAULT_LEN_SEC);
+  document.querySelector(`input[name=subsrc][value=${panelSubsrc === "asr" ? "asr" : "youtube"}]`).checked = true;
+  showSubNote();
   if (needsExtensionReload()) return;
   try { const r = await nowTime(); range.setStart(r.t); } catch (e) { say(String(e)); }
 })();
@@ -50,8 +59,14 @@ $("go").addEventListener("click", async () => {
   try {
     const r = assertVer(await messageWithInject(tab.id, { type: "CLIP_CAPTURE", start: r0.start, end: r0.end, withFrames: true }));
     const clip = normalizeClip({ ...r.clip });
+    let audio = null;
+    if (subsrc() === "asr") {
+      say(`字幕用の音声を取り込み中…（${Math.ceil(r0.len)} 秒。YouTube のタブを表示したまま待ってください）`, "busy");
+      const a = assertVer(await messageWithInject(tab.id, { type: "CLIP_CAPTURE_AUDIO", video_id: clip.video_id, start: clip.start_sec, end: clip.end_sec }));
+      audio = { rate: a.rate, pcm16: a.pcm16, sec: a.sec };
+    }
     // 編集画面はタブを開き直しても続きから編集できるよう storage 経由で渡す
-    await chrome.storage.local.set({ draft: { clip, captions: r.captions, chat: r.chat, frames: r.frames } });
+    await chrome.storage.local.set({ draft: { clip, captions: r.captions, chat: r.chat, frames: r.frames, audio, subsrc: subsrc(), asrDone: false } });
     await chrome.tabs.create({ url: chrome.runtime.getURL("editor.html") });
     say("編集画面を開きました。", "ok");
   } catch (e) { say(String(e)); }

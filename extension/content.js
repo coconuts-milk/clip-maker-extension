@@ -215,7 +215,7 @@ let recording = false;
 let lastRecording = null;   // {id, blob}。編集画面が CLIP_GET_CHUNK で取りに来るまで保持する
 
 // 録画中の案内。ページの上端に出す（録画は <video> の映像を直接描くので、この表示は動画に入らない）
-function showRecBanner(total) {
+function showRecBanner(total, label) {
   const box = document.createElement("div");
   box.id = "clip-maker-rec";
   box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b00020;color:#fff;" +
@@ -231,7 +231,7 @@ function showRecBanner(total) {
   document.documentElement.appendChild(box);
   const update = t => {
     const el = Math.min(total, Math.max(0, t));
-    line.textContent = `● 録画中です。タブ移動しないでください。　${el.toFixed(1)} / ${total.toFixed(1)} 秒`;
+    line.textContent = `● ${label || "録画中です。タブ移動しないでください。"}　${el.toFixed(1)} / ${total.toFixed(1)} 秒`;
     fill.style.width = (total > 0 ? el / total * 100 : 0) + "%";
   };
   update(0);
@@ -497,6 +497,89 @@ function adPlaying() {
 }
 const AD_MSG = "広告の再生中です。広告が終わってから、もう一度押してください。";
 
+// ---- 字幕の音声認識用に、切り抜く時間の音声を取り込む ----
+// 実時間で再生しながら音声を取る（動画のデータは直接取れないため）。16kHz・モノラルにして 16bit で返す。
+const ASR_RATE = 16000;
+
+async function captureAudio(v, start, end) {
+  if (recording) throw new Error("いま録画が進行中です。終わってからもう一度押してください");
+  if (!("MediaStreamTrackProcessor" in window)) throw new Error("このブラウザは音声の取り込みに対応していません（PC 版の Chrome / Edge で使ってください）");
+  const track = v.captureStream().getAudioTracks()[0];
+  if (!track) throw new Error("この動画から音声を取り出せませんでした");
+  const total = end - start;
+  const orig = { t: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume, rate: v.playbackRate };
+  recording = true;
+  let banner, reader;
+  try {
+    v.pause(); v.playbackRate = 1; v.muted = false; v.volume = 1;   // ミュートや音量 0 だと取り込む音声も無音になる
+    await seekTo(v, start);
+    banner = showRecBanner(total, "字幕用の音声を取り込み中です。タブ移動しないでください。");
+    reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    const parts = [];
+    let rate = 0, started = false, done = false;
+    const pump = (async () => {
+      for (;;) {
+        const { value: data, done: d } = await reader.read();
+        if (d || !data) break;
+        if (started && !done) {
+          rate = data.sampleRate;
+          const n = data.numberOfFrames, ch = data.numberOfChannels, mono = new Float32Array(n);
+          const buf = new Float32Array(n);
+          for (let k = 0; k < ch; k++) {
+            data.copyTo(buf, { planeIndex: k, format: "f32-planar" });
+            for (let i = 0; i < n; i++) mono[i] += buf[i] / ch;
+          }
+          parts.push(mono);
+        }
+        data.close();
+      }
+    })().catch(() => {});
+    await v.play();
+    started = true;
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now(), limit = total * 1000 * 3 + 15000;
+      const watch = setInterval(() => {
+        const t = Math.max(0, v.currentTime - start);
+        banner.update(t);
+        if (v.currentTime >= end || v.ended) { clearInterval(watch); resolve(); }
+        else if (Date.now() - t0 > limit) { clearInterval(watch); reject(new Error("音声の取り込みが時間内に終わりませんでした")); }
+        else if (document.hidden) { clearInterval(watch); reject(new Error("取り込み中に YouTube のタブが隠れました。タブを移動しないでください")); }
+      }, 100);
+    });
+    done = true;
+    v.pause();
+    try { await reader.cancel(); } catch (_) { /* 既に閉じた */ }
+    await pump;
+    const len = parts.reduce((a, p) => a + p.length, 0);
+    if (!len || !rate) throw new Error("音声を取り込めませんでした");
+    const pcm = new Float32Array(len);
+    let o = 0;
+    for (const p of parts) { pcm.set(p, o); o += p.length; }
+    // 16kHz に変換（OfflineAudioContext に任せる）
+    const outLen = Math.ceil(len * ASR_RATE / rate);
+    const octx = new OfflineAudioContext(1, outLen, ASR_RATE);
+    const ab = octx.createBuffer(1, len, rate);
+    ab.copyToChannel(pcm, 0);
+    const src = octx.createBufferSource();
+    src.buffer = ab; src.connect(octx.destination); src.start();
+    const rendered = (await octx.startRendering()).getChannelData(0);
+    const i16 = new Int16Array(rendered.length);
+    for (let i = 0; i < rendered.length; i++) i16[i] = Math.max(-32768, Math.min(32767, Math.round(rendered[i] * 32767)));
+    // base64（メッセージは JSON なので）
+    const bytes = new Uint8Array(i16.buffer);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { rate: ASR_RATE, pcm16: btoa(s), sec: +(rendered.length / ASR_RATE).toFixed(2) };
+  } finally {
+    if (banner) banner.remove();
+    v.pause();
+    v.muted = orig.muted; v.volume = orig.volume; v.playbackRate = orig.rate;
+    v.currentTime = orig.t;
+    if (!orig.paused) v.play().catch(() => {});
+    recording = false;
+  }
+}
+
 // ---- メッセージ ----
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const build = BUILD;   // 相手（パネル・編集画面）が版の食い違いを見つけるために、すべての応答に付ける
@@ -541,6 +624,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (lastRecording && lastRecording.id === msg.id) lastRecording = null;   // メモリ解放
     sendResponse({ build, ok: true });
     return;
+  }
+  if (msg.type === "CLIP_CAPTURE_AUDIO") {
+    (async () => {
+      if (!v || videoId() !== msg.video_id) { sendResponse({ error: "切り抜き元の動画を開いている YouTube タブで実行してください" }); return; }
+      if (adPlaying()) { sendResponse({ error: AD_MSG }); return; }
+      const r = await captureAudio(v, msg.start, msg.end);
+      sendResponse({ build, ...r });
+    })().catch(e => sendResponse({ error: `音声を取り込めませんでした: ${e && e.message ? e.message : e}` }));
+    return true;
   }
   if (msg.type === "CLIP_RENDER") {
     (async () => {

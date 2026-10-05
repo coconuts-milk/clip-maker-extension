@@ -505,6 +505,52 @@ function renderChat() {
   }
 }
 
+// ---- 音声認識で字幕を作る ----
+let asrRunning = false;
+
+function asrProgress(show, pct, note) {
+  $("asrprog").classList.toggle("hidden", !show);
+  if (show) { $("asrfill").style.width = Math.max(0, Math.min(100, pct)) + "%"; $("asrnote").textContent = note || ""; }
+}
+
+async function runRecognition() {
+  if (asrRunning) return;
+  if (playing) await setPlaying(false);
+  asrRunning = true;
+  $("asr").disabled = true;
+  const model = (document.querySelector("input[name=asrmodel]:checked") || {}).value || ASR_DEFAULT_MODEL;
+  try {
+    if (!draft.audio) {
+      // 音声がまだ無い（YouTube の字幕で取り込んだ下書き）: YouTube のタブで取り込む
+      const tab = await ytTab();
+      const me = await chrome.tabs.getCurrent();
+      asrProgress(true, 0, `字幕用の音声を取り込み中…（${Math.ceil(clipDur())} 秒。YouTube のタブが前に出ます）`);
+      await chrome.tabs.update(tab.id, { active: true });
+      try {
+        const a = assertVer(await messageWithInject(tab.id, { type: "CLIP_CAPTURE_AUDIO", video_id: draft.clip.video_id, start: draft.clip.start_sec, end: draft.clip.end_sec }));
+        draft.audio = { rate: a.rate, pcm16: a.pcm16, sec: a.sec };
+      } finally { if (me) await chrome.tabs.update(me.id, { active: true }); }
+      await persist();
+    }
+    const device = await asrDevice();
+    $("asrdev").textContent = device === "webgpu" ? "GPU で認識" : "CPU で認識（時間がかかります）";
+    const r = await runAsr(draft.audio.pcm16, model, device, m => asrProgress(true, m.pct, m.note));
+    const cues = asrToCues(r.chunks, clipDur());
+    if (!cues.length) throw new Error("音声から文が取れませんでした（無音か、話し声が無い時間かもしれません）");
+    draft.captions = { lang: "ja", cues, source: "asr", model };
+    draft.asrDone = true;
+    await persist();
+    renderCues(); draw();
+    asrProgress(true, 100, `認識しました（${cues.length} 行・${r.elapsed_s} 秒・${device === "webgpu" ? "GPU" : "CPU"}）`);
+  } catch (e) {
+    asrProgress(true, 0, "");
+    say("cuesmsg", `音声認識に失敗しました: ${e && e.message ? e.message : e}`);
+  } finally {
+    asrRunning = false;
+    $("asr").disabled = false;
+  }
+}
+
 // ---- 動画を作る ----
 
 function validate() {
@@ -636,6 +682,13 @@ async function init() {
     persist(); renderCues(); draw();
   });
   $("save").addEventListener("click", makeVideo);
+  $("asr").addEventListener("click", runRecognition);
+  const { asrModel } = await chrome.storage.local.get("asrModel");
+  document.querySelector(`input[name=asrmodel][value=${ASR_MODELS[asrModel] ? asrModel : ASR_DEFAULT_MODEL}]`).checked = true;
+  document.querySelectorAll("input[name=asrmodel]").forEach(el => el.addEventListener("change", () => chrome.storage.local.set({ asrModel: el.value })));
+  asrDevice().then(d => { $("asrdev").textContent = d === "webgpu" ? "GPU で認識" : "CPU で認識（時間がかかります）"; });
+  // パネルで「音声認識」を選んで取り込んだ下書きは、開いたときに認識を始める
+  if (draft.subsrc === "asr" && draft.audio && !draft.asrDone) runRecognition();
   if (needsExtensionReload()) document.querySelectorAll("button").forEach(x => { if (!x.closest("#needreload")) x.disabled = true; });
 }
 

@@ -5,3 +5,4 @@ __pycache__/
 e2e/node_modules/
 e2e/out/
 e2e/shots/
+e2e/.profile/

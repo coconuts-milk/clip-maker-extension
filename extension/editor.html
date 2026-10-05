@@ -84,6 +84,11 @@
   #masklist td, #masklist th { padding-right: 18px; }
 
   #save { width: 100%; font-size: 21px; padding: 16px; }
+  .asrbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .asrbar .note { font-size: 14px; color: var(--sub); }
+  #asrprog { margin: 4px 0 8px; }
+  #asrprog .bar { height: 10px; background: #e3e3e3; border-radius: 5px; overflow: hidden; }
+  #asrfill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 </style></head><body>
 <main>
   <h1>Clip Maker 編集画面 <span id="edver"></span></h1>
@@ -175,6 +180,15 @@
   <div class="cols2">
     <section>
       <h2>③ 字幕の文</h2>
+      <div class="asrbar">
+        <button id="asr">音声認識で字幕を作り直す</button>
+        <div class="choice">
+          <label><input type="radio" name="asrmodel" value="small"> 標準</label>
+          <label><input type="radio" name="asrmodel" value="turbo"> 高精度</label>
+        </div>
+        <span class="note" id="asrdev"></span>
+      </div>
+      <div id="asrprog" class="hidden"><div class="bar"><div id="asrfill"></div></div><div id="asrnote" class="note"></div></div>
       <div class="msg bad" id="cuesmsg"></div>
       <table id="cues"><thead><tr><th></th><th>開始（秒）</th><th>終了（秒）</th><th>文</th><th></th></tr></thead><tbody></tbody></table>
       <button id="addcue" style="margin-top:8px">字幕を追加</button>
@@ -190,5 +204,6 @@
   <div id="msg" class="msg"></div>
 </main>
 <script src="common.js"></script>
+<script src="asr.js"></script>
 <script src="editor.js"></script>
 </body></html>

@@ -14,7 +14,14 @@
   .range .under button { padding: 8px 8px; font-size: 15px; }
   .range .lenbox { gap: 4px; }
   .range .lenbox input { width: 64px; font-size: 19px; padding: 6px 2px; }
-  #go { width: 100%; margin-top: 18px; }
+  #go { width: 100%; margin-top: 14px; }
+  .subsrc { margin-top: 16px; }
+  .subsrc .cap { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .choice { display: flex; gap: 8px; flex-wrap: wrap; }
+  .choice label { border: 1px solid #999; border-radius: 6px; padding: 6px 12px; cursor: pointer; background: #fff; font-size: 16px; }
+  .choice input { position: absolute; opacity: 0; pointer-events: none; }
+  .choice label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .note { color: var(--sub); font-size: 14px; margin-top: 6px; min-height: 1.4em; }
 </style></head><body>
 <h1>Clip Maker <span id="ver"></span></h1>
 <div class="range">
@@ -28,6 +35,14 @@
     <div class="lenbox">長さ <input id="length" type="number" min="0.1" max="60" step="0.1"> 秒</div>
     <button id="nowend">今時間取得</button>
   </div>
+</div>
+<div class="subsrc">
+  <div class="cap">字幕</div>
+  <div class="choice">
+    <label><input type="radio" name="subsrc" value="youtube"> YouTube の字幕</label>
+    <label><input type="radio" name="subsrc" value="asr"> 音声認識</label>
+  </div>
+  <div class="note" id="subnote"></div>
 </div>
 <button id="go" class="primary">吸い出して編集画面を開く</button>
 <div id="msg" class="msg"></div>
