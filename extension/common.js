@@ -8,7 +8,7 @@
 // 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
 // （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
 // 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
-const BUILD = "0.12.0";
+const BUILD = "0.13.0";
 
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
@@ -258,7 +258,7 @@ function layoutFlow(ctx, chat, clip) {
   const { W, H } = outSize(clip);
   const o = clip.chat_overlay;
   const size = Math.min(W, H) * o.font_pct / 100;
-  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.length].join("|");
+  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.map(m => `${m.t}:${m.amount || ""}:${m.text}`).join("\n")].join("|");
   const hit = flowCache.get(chat);
   if (hit && hit.key === key) return hit.items;
   ctx.font = `700 ${size}px ${DRAW_FONT}`;

@@ -487,22 +487,44 @@ async function playCue(cue) {
 
 // ---- コメント一覧（表示のみ） ----
 
+// コメントは直せる（時刻・本文・削除・追加）。流れるコメントの配置は本文の長さで決まるので、直すたびにプレビューを描き直す
 function renderChat() {
   say("chatmsg", draft.chat.error ? `コメントを取得できていません: ${draft.chat.error}` :
-    draft.chat.messages.length === 0 ? "この時間にはコメントがありません。" : "");
+    draft.chat.messages.length === 0 ? "この時間にはコメントがありません。「コメントを追加」で入れられます。" : "");
   const tb = $("chat").querySelector("tbody");
   tb.textContent = "";
-  for (const c of draft.chat.messages) {
+  draft.chat.messages.forEach((c, i) => {
     const tr = document.createElement("tr");
+    const tdPlay = document.createElement("td");
+    const jump = document.createElement("button");
+    jump.className = "playcue"; jump.textContent = "▶"; jump.title = "プレビューをこのコメントが出る時刻にする";
+    jump.addEventListener("click", () => { if (playing) setPlaying(false); $("pvtime").value = c.t; draw(); });
+    tdPlay.appendChild(jump);
+    tr.appendChild(tdPlay);
     const tdTime = document.createElement("td");
-    tdTime.textContent = `${c.t} 秒`;
+    const t = document.createElement("input");
+    t.type = "number"; t.step = "0.1"; t.min = "0"; t.className = "ct"; t.value = c.t;
+    t.addEventListener("input", () => { c.t = Number(t.value); draw(); });
+    t.addEventListener("change", persist);
+    tdTime.appendChild(t);
     tr.appendChild(tdTime);
     const tdT = document.createElement("td");
     if (c.amount) { const s = document.createElement("span"); s.className = "amt"; s.textContent = `${c.amount} `; tdT.appendChild(s); }
-    tdT.appendChild(document.createTextNode(c.text));
+    const x = document.createElement("input");
+    x.type = "text"; x.className = "cx"; x.value = c.text;
+    x.addEventListener("input", () => { c.text = x.value; draw(); });
+    x.addEventListener("change", persist);
+    x.addEventListener("focus", () => { $("pvtime").value = Math.min(clipDur(), c.t + 1); draw(); });   // 直しているコメントが流れている所を見せる
+    tdT.appendChild(x);
     tr.appendChild(tdT);
+    const tdDel = document.createElement("td");
+    const del = document.createElement("button");
+    del.className = "del"; del.textContent = "消す";
+    del.addEventListener("click", () => { draft.chat.messages.splice(i, 1); persist(); renderChat(); draw(); });
+    tdDel.appendChild(del);
+    tr.appendChild(tdDel);
     tb.appendChild(tr);
-  }
+  });
 }
 
 // ---- 音声認識で字幕を作る ----
@@ -674,6 +696,18 @@ async function init() {
   $("play").addEventListener("click", () => setPlaying(!playing));
   document.addEventListener("keydown", ev => {
     if (ev.code === "Space" && !/^(INPUT|TEXTAREA|BUTTON)$/.test(document.activeElement.tagName)) { ev.preventDefault(); setPlaying(!playing); }
+  });
+  document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === b));
+    document.querySelectorAll(".tabpane").forEach(p => p.classList.toggle("hidden", p.id !== "tab-" + b.dataset.tab));
+  }));
+  $("addchat").addEventListener("click", () => {
+    const t = +pvTime().toFixed(1);
+    draft.chat.messages.push({ t, author: "", text: "" });
+    draft.chat.messages.sort((a, b) => a.t - b.t);
+    persist(); renderChat(); draw();
+    const row = [...$("chat").querySelectorAll("tbody tr")].find(tr => Number(tr.querySelector("input.ct").value) === t && tr.querySelector("input.cx").value === "");
+    if (row) row.querySelector("input.cx").focus();
   });
   $("addcue").addEventListener("click", () => {
     const t = +pvTime().toFixed(1);   // 今プレビューで見ている時刻に追加する

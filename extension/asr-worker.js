@@ -18,7 +18,7 @@ const CHUNK_S = 30, STRIDE_S = 5;   // Whisper は 30 秒単位。つなぎ目�
 let loaded = null;   // {key, transcriber}
 const post = m => self.postMessage(m);
 
-async function load(modelKey, device) {
+async function load(modelKey, device, cached) {
   const key = modelKey + "/" + device;
   if (loaded && loaded.key === key) return loaded.transcriber;
   if (loaded) { try { await loaded.transcriber.dispose(); } catch (_) { /* 解放済み */ } loaded = null; }
@@ -31,7 +31,10 @@ async function load(modelKey, device) {
       if (p.status === "progress" && p.file) {
         seen[p.file] = { loaded: p.loaded || 0, total: p.total || 0 };
         const tot = Object.values(seen).reduce((a, x) => a + x.total, 0), got = Object.values(seen).reduce((a, x) => a + x.loaded, 0);
-        post({ type: "progress", stage: "download", pct: tot ? got / tot * 100 : 0, note: `認識モデルをダウンロード中 ${(got / 1048576).toFixed(0)} / ${(tot / 1048576).toFixed(0)} MB（初回だけ）` });
+        // 保存済みのモデルを読み込むときも同じ進み具合が来るので、表示を分ける（「毎回ダウンロードしている」と見えないように）
+        post({ type: "progress", stage: cached ? "load" : "download", pct: tot ? got / tot * 100 : 0,
+               note: cached ? `保存済みの認識モデルを読み込み中 ${(got / 1048576).toFixed(0)} / ${(tot / 1048576).toFixed(0)} MB`
+                            : `認識モデルをダウンロード中 ${(got / 1048576).toFixed(0)} / ${(tot / 1048576).toFixed(0)} MB（初回だけ）` });
       } else if (p.status === "ready") {
         post({ type: "progress", stage: "load", pct: 100, note: "認識モデルを読み込みました" });
       }
@@ -43,11 +46,12 @@ async function load(modelKey, device) {
 
 self.onmessage = async ev => {
   const req = ev.data;
-  if (req.type !== "run") return;
+  if (req.type !== "run" && req.type !== "preload") return;
   const t0 = performance.now();
   try {
     post({ type: "progress", stage: "load", pct: 0, note: "認識モデルを準備中…" });
-    const transcriber = await load(req.model, req.device);
+    const transcriber = await load(req.model, req.device, req.cached);
+    if (req.type === "preload") { post({ type: "done", chunks: [], elapsed_s: +((performance.now() - t0) / 1000).toFixed(1) }); return; }
     const audio = req.audio;
     const total = audio.length / SAMPLE_RATE;
     const time_precision = transcriber.processor.feature_extractor.config.chunk_length / transcriber.model.config.max_source_positions;

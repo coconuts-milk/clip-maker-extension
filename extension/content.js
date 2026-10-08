@@ -396,6 +396,12 @@ async function recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, vcfg
   // 映像: 新しいコマが画面に出るたびに 1 枚。時刻は元動画の時刻（mediaTime）から付けるので間隔が揃う。
   // 読み込み待ちで再生が止まると時計だけ進むので、そのぶんを stall に足して音声とずれないようにする
   let m0 = null, t0 = 0, stall = 0, lastTs = -1, lastKey = -Infinity, lastT = 0;
+  let frameDur = 0, lastFrame = null;   // コマの間隔の見積もり（µs）と直前のコマ（通知が飛んだ所を埋めるため）
+  const pushFrame = (frame, ts) => {
+    const key = ts - lastKey >= REC_KEYFRAME_US;
+    if (key) lastKey = ts;
+    venc.encode(frame, { keyFrame: key });
+  };
   await v.play();
   await new Promise((resolve, reject) => {
     const tStart = Date.now(), limit = total * 1000 * 3 + 15000;
@@ -416,11 +422,22 @@ async function recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, vcfg
       if (ts > lastTs) {
         if (venc.encodeQueueSize > REC_QUEUE_MAX) dropped++;
         else {
+          // 動画側のコマの通知が飛ぶことがある（1 コマぶん間隔が空く）。そこは直前のコマを同じ間隔で入れて、コマの間隔を揃える
+          if (lastTs >= 0) {
+            const d = ts - lastTs;
+            frameDur = frameDur ? (Math.abs(d - frameDur) < frameDur * 0.5 ? (frameDur * 7 + d) / 8 : frameDur) : d;
+            if (lastFrame && frameDur && d > frameDur * 1.5) {
+              for (let t = lastTs + frameDur; t < ts - frameDur * 0.5; t += frameDur) {
+                const dup = new VideoFrame(lastFrame, { timestamp: Math.round(t) });
+                pushFrame(dup, Math.round(t));
+                dup.close();
+              }
+            }
+          }
           const frame = new VideoFrame(canvas, { timestamp: ts });
-          const key = ts - lastKey >= REC_KEYFRAME_US;
-          if (key) lastKey = ts;
-          venc.encode(frame, { keyFrame: key });
-          frame.close();
+          pushFrame(frame, ts);
+          if (lastFrame) lastFrame.close();
+          lastFrame = frame;   // 次のコマまで持っておく（閉じるのは次のコマが来たとき）
           lastTs = ts;
         }
       }
@@ -436,6 +453,7 @@ async function recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, vcfg
     }, REC_WATCH_MS);
   });
   v.pause();
+  if (lastFrame) { lastFrame.close(); lastFrame = null; }
   if (reader) { try { await reader.cancel(); } catch (_) { /* 既に閉じた */ } }
   await venc.flush();
   venc.close();

@@ -7,7 +7,7 @@ const fs = require("fs");
 
 const CHROME = process.env.CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const EXT = path.resolve(__dirname, "..", "extension");
-const PROFILE = path.join(__dirname, ".profile");
+const PROFILE = process.env.PROFILE || path.join(__dirname, ".profile");   // PROFILE=別フォルダ で「初回」の状態を再現できる
 const VIDEO = process.argv[2] || "JnKgfHO_UbU";
 const START = process.argv[3] !== undefined ? Number(process.argv[3]) : 1880;
 const LEN = process.argv[4] !== undefined ? Number(process.argv[4]) : 14;
@@ -53,6 +53,15 @@ const check = (name, ok, detail) => { checks.push({ name, ok: !!ok }); console.l
       document.querySelector("input[name=subsrc][value=asr]").click();
     }, LEN, MODEL, DEVICE);
     check("パネル: 字幕の作り方を選べる", await panel.evaluate(() => document.querySelector("input[name=subsrc][value=asr]").checked));
+    // 音声認識を選んだ時点で認識モデルの取得が始まり、取得済みになる（編集画面に入る前）
+    let stat = "", lastStat = "";
+    for (let i = 0; i < 1200; i++) {
+      await sleep(500);
+      stat = await panel.evaluate(() => document.getElementById("modelstat").textContent);
+      if (stat !== lastStat) { console.log("  パネル: " + stat); lastStat = stat; }
+      if (stat.includes("取得済み") || stat.includes("できませんでした")) break;
+    }
+    check("パネルで音声認識を選ぶと、その場で認識モデルが取得される", stat.includes("取得済み"), stat);
 
     await page.bringToFront();
     const tGo = Date.now();
@@ -70,15 +79,17 @@ const check = (name, ok, detail) => { checks.push({ name, ok: !!ok }); console.l
 
     // 編集画面を開くと、パネルで選んだ設定で認識が始まる
     const t0 = Date.now();
-    let note = "", last = "";
+    let note = "", last = "", sawDownload = false;
     for (let i = 0; i < 1200; i++) {   // 最長 10 分（初回のダウンロード込み）
       await sleep(500);
       const s = await editor.evaluate(() => ({ note: document.getElementById("asrnote").textContent, err: document.getElementById("cuesmsg").textContent, dev: document.getElementById("asrdev").textContent }));
       note = s.note;
       if (note !== last) { console.log("  " + s.dev + " / " + note); last = note; }
+      if (note.includes("ダウンロード中")) sawDownload = true;
       if (s.err.includes("失敗")) { check("認識が最後まで進む", false, s.err); break; }
       if (note.startsWith("認識しました")) break;
     }
+    check("編集画面ではダウンロードし直さない（保存済みのモデルを読み込む）", !sawDownload, sawDownload ? "ダウンロード中の表示が出た" : "");
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     const res = await editor.evaluate(async () => { const d = (await chrome.storage.local.get("draft")).draft; return { source: d.captions.source, model: d.captions.model, cues: d.captions.cues }; });
     check("認識結果が字幕に入る", res.source === "asr" && res.cues.length > 0, { model: res.model, rows: res.cues.length, elapsed_s: elapsed });
