@@ -73,8 +73,18 @@ const check = (name, ok, detail) => { checks.push({ name, ok: !!ok }); console.l
     const edTarget = await browser.waitForTarget(t => t.url().includes("/editor.html"), { timeout: (LEN + 90) * 1000 });
     const editor = await edTarget.page();
     await editor.bringToFront();
-    const a = await editor.evaluate(async () => { const d = (await chrome.storage.local.get("draft")).draft; return { sec: d.audio && d.audio.sec, rate: d.audio && d.audio.rate, len: d.audio && d.audio.pcm16.length, yt: d.captions.cues.length }; });
+    const a = await editor.evaluate(async () => {
+      const d = (await chrome.storage.local.get("draft")).draft;
+      // 取り込んだ音声の音量（無音になっていないか）。pcm16 の二乗平均平方根を 0〜1 で
+      const bin = atob(d.audio.pcm16), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const i16 = new Int16Array(bytes.buffer);
+      let sum = 0, peak = 0;
+      for (let i = 0; i < i16.length; i++) { const v = i16[i] / 32768; sum += v * v; peak = Math.max(peak, Math.abs(v)); }
+      return { sec: d.audio.sec, rate: d.audio.rate, len: d.audio.pcm16.length, yt: d.captions.cues.length, title: d.clip.title.slice(0, 40), rms: +Math.sqrt(sum / i16.length).toFixed(4), peak: +peak.toFixed(3) };
+    });
     check("音声が取り込めている（長さが切り抜きと同じ）", a.rate === 16000 && Math.abs(a.sec - LEN) < 1.0, a);
+    check("取り込んだ音声が無音ではない", a.rms > 0.005 && a.peak > 0.05, { rms: a.rms, peak: a.peak });
     console.log("  取り込みにかかった時間:", ((Date.now() - tGo) / 1000).toFixed(1), "秒");
 
     // 編集画面を開くと、パネルで選んだ設定で認識が始まる

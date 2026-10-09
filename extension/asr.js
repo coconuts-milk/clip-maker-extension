@@ -79,12 +79,33 @@ function runAsr(audioB64, model, device, onProgress) {
   return workerCall({ type: "run", audio, model, device }, onProgress, [audio.buffer]);
 }
 
-// 認識結果 → 字幕の行 [{start, end, text}]（時刻は切り抜き開始からの秒）。長い文は句読点で分け、時間は文字数で按分する
-function asrToCues(chunks, dur) {
+const ASR_SILENCE_RMS = 0.01;   // この音量（0〜1 の二乗平均平方根）に満たない区間の認識結果は捨てる（無音や音楽に対して Whisper が作り話をするため）
+// 音楽だけの区間で Whisper が出しがちな決まり文句（日本語の学習データの癖）。これだけの行は捨てる
+const ASR_HALLUCINATIONS = ["チャンネル登録お願いします", "チャンネル登録よろしくお願いします", "ご視聴ありがとうございました", "ご視聴ありがとうございます", "最後までご視聴ありがとうございました", "おやすみなさい", "字幕"];
+// 「長い区間に短い文しか無い行を捨てる」規則は入れない。話し声の行まで消した（2026-10-09 実測: 9 行 → 5 行）
+function looksHallucinated(text) {
+  const t = text.replace(/[\s!！?？。、.]/g, "");
+  return ASR_HALLUCINATIONS.some(h => t === h.replace(/[\s!！?？。、.]/g, ""));
+}
+
+// 区間 [start, end]（秒）の音量。audio は 16kHz の Float32Array
+function audioLevel(audio, start, end, rate) {
+  const a = Math.max(0, Math.floor(start * rate)), b = Math.min(audio.length, Math.ceil(end * rate));
+  if (b - a < rate * 0.1) return 1;   // 短すぎて測れないときは捨てない
+  let sum = 0;
+  for (let i = a; i < b; i++) sum += audio[i] * audio[i];
+  return Math.sqrt(sum / (b - a));
+}
+
+// 認識結果 → 字幕の行 [{start, end, text}]（時刻は切り抜き開始からの秒）。長い文は句読点で分け、時間は文字数で按分する。
+// audio（16kHz）を渡すと、話し声の無い区間の結果を捨てる
+function asrToCues(chunks, dur, audio, rate) {
   const cues = [];
   for (const c of chunks) {
     const start = Math.max(0, c.start), end = Math.min(dur, c.end);
     if (!(end > start)) continue;
+    if (audio && audioLevel(audio, start, end, rate || 16000) < ASR_SILENCE_RMS) continue;
+    if (looksHallucinated(c.text)) continue;
     const text = c.text.replace(/\s+/g, " ").trim();
     if (!text) continue;
     let parts = text.length > ASR_MAX_CUE_CHARS ? text.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean) : [text];

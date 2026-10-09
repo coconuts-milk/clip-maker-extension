@@ -272,7 +272,10 @@ async function waitVideoFile(since, tag, timeoutMs) {
         await editor.evaluate(() => {
           document.querySelector("input[name=valign][value=bottom]").click();
           document.querySelector("input[name=audio][value=off]").click();
+          document.querySelector("input[name=quality][value=small]").click();
         });
+        const sizeNote = await editor.evaluate(() => document.getElementById("sizenote").textContent);
+        check("画質を「軽い」にすると目安の大きさが出る", /約 [\d.]+ MB/.test(sizeNote), sizeNote);
         await sleep(300);
         const c3 = await crop();
         check("縦: 下よりにすると動画の下端と枠の下端がそろう", Math.abs(c3.y + c3.h - 1080) <= 1 && c3.w === c2.w, c3);
@@ -306,9 +309,14 @@ async function waitVideoFile(since, tag, timeoutMs) {
         const g = frameGaps(file);
         check(`コマの間隔が揃っている（${mode}）`, g.longGaps === 0 && g.fps >= 29 && g.fps <= 61 && g.frames > LEN * 25, g);
         const st = streamsOf(file);
-        if (mode === "landscape") check("音あり: 動画に音声が入っている", st.includes("video") && st.includes("audio"), st);
+        if (mode === "landscape") {
+          check("音あり: 動画に音声が入っている", st.includes("video") && st.includes("audio"), st);
+          await editor.evaluate(() => document.querySelector("input[name=quality][value=high]").click());   // 2 本目の比較用に戻す
+        }
         else {
           check("音なし: 動画に音声が入っていない", st.includes("video") && !st.includes("audio"), st);
+          const mb = fs.statSync(file).size / 1048576, mbHigh = fs.statSync(files[0]).size / 1048576;
+          check("画質「軽い」で動画が小さくなる（目安 2Mbps 以内）", mb < LEN * 2000000 / 8 / 1048576 * 1.3 && mb < mbHigh / 2, { light_MB: +mb.toFixed(1), high_MB: +mbHigh.toFixed(1) });
           // 出来た動画そのものが、枠どおり（下より = 上が黒・下に絵）になっている
           const top = bandBrightness(file, 3, 10), low = bandBrightness(file, 3, 1500);
           check("縦: 出来た動画が囲み枠どおりに切り取られている", top < 3 && low > 20, { top: +top.toFixed(1), low: +low.toFixed(1) });

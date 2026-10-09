@@ -103,6 +103,9 @@ function setupOptions() {
   document.querySelectorAll("input[name=audio]").forEach(el => el.addEventListener("change", () => {
     draft.clip.audio = el.value === "on"; persist(); renderOptions();
   }));
+  document.querySelectorAll("input[name=quality]").forEach(el => el.addEventListener("change", () => {
+    draft.clip.quality = el.value; chrome.storage.local.set({ quality: el.value }); persist(); renderOptions();
+  }));
   $("chat_on").addEventListener("change", () => {
     draft.clip.chat_overlay.enabled = $("chat_on").checked; persist(); renderOptions(); draw();
   });
@@ -115,9 +118,17 @@ function renderOptions() {
   $("srcwrap").classList.toggle("hidden", !portrait);
   if (portrait) document.querySelector(`input[name=valign][value=${f.valign}]`).checked = true;
   document.querySelector(`input[name=audio][value=${draft.clip.audio ? "on" : "off"}]`).checked = true;
+  document.querySelector(`input[name=quality][value=${draft.clip.quality}]`).checked = true;
+  renderSizeNote();
   $("chat_on").checked = !!draft.clip.chat_overlay.enabled;
   $("chatopts").classList.toggle("hidden", !draft.clip.chat_overlay.enabled);
   sliders.forEach(show => show());
+}
+
+// 出来上がりの大きさの目安（画質・音声・長さで変わる）
+function renderSizeNote() {
+  const mb = estimateMb(draft.clip), sec = clipDur();
+  $("sizenote").textContent = `出来上がりの目安: 約 ${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB（${sec.toFixed(0)} 秒）`;
 }
 
 // ---- プレビュー ----
@@ -557,8 +568,8 @@ async function runRecognition() {
     const device = await asrDevice();
     $("asrdev").textContent = device === "webgpu" ? "GPU で認識" : "CPU で認識（時間がかかります）";
     const r = await runAsr(draft.audio.pcm16, model, device, m => asrProgress(true, m.pct, m.note));
-    const cues = asrToCues(r.chunks, clipDur());
-    if (!cues.length) throw new Error("音声から文が取れませんでした（無音か、話し声が無い時間かもしれません）");
+    const cues = asrToCues(r.chunks, clipDur(), pcm16ToFloat(draft.audio.pcm16), draft.audio.rate);
+    if (!cues.length) throw new Error("この時間には話し声が見つかりませんでした（無音か音楽だけの区間）");
     draft.captions = { lang: "ja", cues, source: "asr", model };
     draft.asrDone = true;
     await persist();
@@ -678,6 +689,8 @@ async function init() {
   }
   draft = d;
   normalizeClip(draft.clip);
+  const { quality: savedQuality } = await chrome.storage.local.get("quality");   // 前回選んだ画質を引き継ぐ
+  if (!d.qualitySet && QUALITY[savedQuality]) { draft.clip.quality = savedQuality; draft.qualitySet = true; }
 
   const startTI = createTimeInput($("start_sec"), () => range.onStartInput());
   const endTI = createTimeInput($("end_sec"), () => range.onEndInput());

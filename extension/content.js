@@ -202,8 +202,8 @@ async function captureFrames(v, start, end) {
 
 const REC_FPS = 30;              // 動画のコマに合わせた取り込みが使えないブラウザでの取り込み間隔
 const REC_WATCH_MS = 200;        // 録画の終了・異常を見張る間隔
-const REC_VIDEO_BPS = 8000000;   // 1080p30 の H.264 で破綻しない実用値
-const REC_AUDIO_BPS = 192000;
+// ビットレートは clip.quality（common.js の QUALITY）で決める
+const qualityOf = clip => QUALITY[clip.quality] || QUALITY[DEFAULT_QUALITY];
 const REC_KEYFRAME_US = 2000000;   // キーフレームの間隔（2 秒。シークのしやすさと大きさのバランス）
 const REC_STALL_US = 150000;       // 再生が止まった（読み込み待ち）とみなす、時計と動画の時刻のずれ。これを超えたぶん映像の時刻を遅らせて音声と合わせる
 const REC_QUEUE_MAX = 30;          // エンコードの待ち行列がこれを超えたらコマを落とす（落とした数は知らせる）
@@ -266,7 +266,7 @@ async function recordWithMediaRecorder(v, clip, cues, chat, ctx, banner, total) 
     const audioTracks = clip.audio ? v.captureStream().getAudioTracks() : [];
     if (clip.audio && !audioTracks.length) throw new Error("この動画から音声を取り出せませんでした");
     const stream = new MediaStream([vTrack, ...audioTracks]);
-    rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: REC_VIDEO_BPS, audioBitsPerSecond: REC_AUDIO_BPS });
+    rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: qualityOf(clip).video_bps, audioBitsPerSecond: qualityOf(clip).audio_bps });
     const chunks = [];
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
     const stopped = new Promise((resolve, reject) => { rec.onstop = resolve; rec.onerror = e => reject(e.error || new Error("録画エラー")); });
@@ -315,10 +315,11 @@ async function recordWithMediaRecorder(v, clip, cues, chat, ctx, banner, total) 
 }
 
 // (A) WebCodecs。使えるかを先に確かめる。使えない理由は文字列で返す（使えるときは設定を返す）
-async function webCodecsSupport(W, H, audio) {
+async function webCodecsSupport(W, H, audio, q) {
   if (!("VideoEncoder" in window) || !("VideoFrame" in window)) return { why: "VideoEncoder が無い" };
   // High プロファイル・レベル 4.2（1920×1080 の 60 コマ/秒まで）
-  const vcfg = { codec: "avc1.64002A", width: W, height: H, bitrate: REC_VIDEO_BPS, framerate: 30, avc: { format: "avc" },
+  // bitrateMode: "constant" = 指定したビットレートに合わせる（"variable" だと指定より大きくなり、目安の大きさと合わない＝2026-10-09 実測）
+  const vcfg = { codec: "avc1.64002A", width: W, height: H, bitrate: q.video_bps, bitrateMode: "constant", framerate: 30, avc: { format: "avc" },
                  latencyMode: "realtime", hardwareAcceleration: "no-preference" };
   let vs;
   try { vs = await VideoEncoder.isConfigSupported(vcfg); } catch (e) { return { why: `映像の設定が通らない: ${e.message}` }; }
@@ -326,7 +327,7 @@ async function webCodecsSupport(W, H, audio) {
   if (audio) {
     if (!("AudioEncoder" in window) || !("MediaStreamTrackProcessor" in window)) return { why: "AudioEncoder が無い" };
     try {
-      const as = await AudioEncoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2, bitrate: REC_AUDIO_BPS, aac: { format: "aac" } });
+      const as = await AudioEncoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate: 48000, numberOfChannels: 2, bitrate: q.audio_bps, aac: { format: "aac" } });
       if (!as.supported) return { why: "AAC のエンコードに対応していない" };
     } catch (e) { return { why: `音声の設定が通らない: ${e.message}` }; }
   }
@@ -385,7 +386,7 @@ async function recordWithWebCodecs(v, clip, cues, chat, ctx, banner, total, vcfg
             },
             error: e => { encErr = encErr || e; },
           });
-          aenc.configure({ codec: "mp4a.40.2", sampleRate: aRate, numberOfChannels: aCh, bitrate: REC_AUDIO_BPS, aac: { format: "aac" } });
+          aenc.configure({ codec: "mp4a.40.2", sampleRate: aRate, numberOfChannels: aCh, bitrate: qualityOf(clip).audio_bps, aac: { format: "aac" } });
         }
         if (a0 !== null && data.timestamp + dur > a0 && aenc.state === "configured") aenc.encode(data);
         data.close();
@@ -481,7 +482,7 @@ async function recordClip(v, clip, cues, chat) {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
   const total = clip.end_sec - clip.start_sec;
-  const wc = await webCodecsSupport(W, H, clip.audio);
+  const wc = await webCodecsSupport(W, H, clip.audio, qualityOf(clip));
 
   const orig = { t: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume, rate: v.playbackRate };
   recording = true;

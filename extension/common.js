@@ -8,7 +8,7 @@
 // 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
 // （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
 // 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
-const BUILD = "0.13.0";
+const BUILD = "0.14.0";
 
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
@@ -24,6 +24,20 @@ const SRC_VIEW = { x: (VIDEO_W - SRC_VIEW_W) / 2, y: (VIDEO_H - SRC_VIEW_H) / 2,
 const CROP_MIN_W = 240;                      // 枠の最小の幅（元動画の px）。これ以上小さいと拡大しすぎて絵が粗くなる
 const CROP_RATIO = PORTRAIT_H / PORTRAIT_W;  // 枠の高さ ÷ 幅（固定）
 const DEFAULT_CROP_W = VIDEO_H;              // 最初の枠の幅 = 動画の高さ（中央の正方形が出来上がりの中央に入り、上下が黒）
+
+// 画質（ビットレート）。送り先の容量制限（例: 20MB）に合わせて下げられるようにする
+const QUALITY = {
+  high:  { label: "高",   video_bps: 8000000, audio_bps: 192000, note: "きれい" },
+  std:   { label: "標準", video_bps: 4000000, audio_bps: 160000, note: "ほどほど" },
+  small: { label: "軽い", video_bps: 2000000, audio_bps: 96000,  note: "容量を抑える" },
+};
+const DEFAULT_QUALITY = "std";
+// 出来上がりの大きさの目安（MB）。ビットレート × 秒数（実際は絵の動きで前後する）
+function estimateMb(clip) {
+  const q = QUALITY[clip.quality] || QUALITY[DEFAULT_QUALITY];
+  const sec = clip.end_sec - clip.start_sec;
+  return (q.video_bps + (clip.audio ? q.audio_bps : 0)) * sec / 8 / 1048576;
+}
 
 // ---- 設定の既定値 ----
 function defaultFrame(mode) {
@@ -45,6 +59,7 @@ function normalizeClip(clip) {
     ? normalizePortrait(f)
     : { mode: "landscape" };
   clip.audio = clip.audio !== false;   // 音声を入れるか（既定: 入れる）
+  if (!QUALITY[clip.quality]) clip.quality = DEFAULT_QUALITY;
   const o = clip.chat_overlay || {};
   clip.chat_overlay = { ...DEFAULT_CHAT_OVERLAY, ...(typeof o.enabled === "boolean" ? { enabled: o.enabled } : {}) };
   for (const k of ["opacity", "font_pct", "top_pct", "lanes", "cross_sec"]) if (o.style === "flow" && Number.isFinite(o[k])) clip.chat_overlay[k] = o[k];
