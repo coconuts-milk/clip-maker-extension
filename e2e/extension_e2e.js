@@ -118,7 +118,7 @@ async function waitVideoFile(since, tag, timeoutMs) {
         return orig(q);
       };
     }, VIDEO);
-    await panel.setViewport({ width: 360, height: 640 });   // サイドパネルの実際の幅で確認する
+    await panel.setViewport({ width: 343, height: 520 });   // サイドパネルの幅 360 から縦スクロールバーぶんを引いた幅で確認する
 
     // 「ファイルだけ新しくなり、拡張の更新ボタンは押していない」状態の再現: 部品の版（BUILD）だけ書き換えてパネルを開く。
     // これで「止まらない・囲み枠が効かない・音なしが効かない」が起きた（2026-10-04）。案内と更新ボタンが出て、命令は送られないこと
@@ -160,7 +160,7 @@ async function waitVideoFile(since, tag, timeoutMs) {
     check("パネル: 開始・終了・長さが連動", p2.lenAfterEnd !== String(LEN) && p2.endAfterLen === p2.end, p2);
     await panel.screenshot({ path: path.join(SHOTS, "panel.png") });
     const fits = await panel.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
-    check("パネル: 幅 360 に横並びで収まる", fits);
+    check("パネル: 幅 343（360 − スクロールバー）に横並びで収まる", fits);
 
     // 3) 吸い出して編集画面を開く
     await page.bringToFront();

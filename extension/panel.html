@@ -8,12 +8,14 @@
   h1 span { font-size: 13px; color: var(--sub); font-weight: 400; }
   /* サイドパネルは幅 360px 前後。開始と終了を横に並べて収まる大きさにする */
   body { padding: 14px 12px; }
-  .timeinput .tbox { width: 32px; font-size: 19px; padding: 6px 0; }
-  .timeinput .tbox.td { width: 22px; }
+  /* 縦スクロールバーが出ても横にはみ出さない幅（340px）に収める */
+  .timeinput .tbox { width: 30px; font-size: 18px; padding: 6px 0; }
+  .timeinput .tbox.td { width: 20px; }
+  .timeinput { gap: 1px; }
   .timeinput .tsep { font-size: 19px; }
   .range .under button { padding: 8px 8px; font-size: 15px; }
   .range .lenbox { gap: 4px; }
-  .range .lenbox input { width: 64px; font-size: 19px; padding: 6px 2px; }
+  .range .lenbox input { width: 58px; font-size: 18px; padding: 6px 2px; }
   #go { width: 100%; margin-top: 14px; }
   .subsrc { margin-top: 16px; }
   .subsrc .cap { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
