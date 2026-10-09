@@ -75,8 +75,11 @@ function workerCall(req, onProgress, transfer) {
 
 // 認識を実行する。onProgress({stage, pct, note}) を随時呼ぶ。返り値 {chunks: [{start, end, text}], elapsed_s, device}
 function runAsr(audioB64, model, device, onProgress) {
-  const audio = pcm16ToFloat(audioB64);
-  return workerCall({ type: "run", audio, model, device }, onProgress, [audio.buffer]);
+  return runAsrFloat(pcm16ToFloat(audioB64), model, device, onProgress);
+}
+function runAsrFloat(audio, model, device, onProgress) {
+  const copy = new Float32Array(audio);   // 渡した配列は Worker 側に移って使えなくなるので複製を渡す
+  return workerCall({ type: "run", audio: copy, model, device }, onProgress, [copy.buffer]);
 }
 
 const ASR_SILENCE_RMS = 0.01;   // この音量（0〜1 の二乗平均平方根）に満たない区間の認識結果は捨てる（無音や音楽に対して Whisper が作り話をするため）

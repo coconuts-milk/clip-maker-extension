@@ -675,9 +675,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (end <= start) { sendResponse({ error: "開始が動画の長さを超えています" }); return; }
     let title = document.title.replace(/ - YouTube$/, "");
     try { const info = await askPage("info"); if (info.id === id && info.title) title = info.title; } catch (_) { /* タイトルはページ名で代用できる */ }
-    const captions = await fetchCaptions(start, end);
+    // framesOnly: 保存した設定を読み込んだとき等、字幕・コメントは手元にあるのでコマ画像だけ撮る
+    const captions = msg.framesOnly ? { cues: [] } : await fetchCaptions(start, end);
     const frames = msg.withFrames ? await captureFrames(v, start, end) : undefined;
-    const chat = await collectChat(v, start, end);
+    const chat = msg.framesOnly ? { messages: [] } : await collectChat(v, start, end);
     sendResponse({
       build,
       clip: { video_id: id, url: `https://www.youtube.com/watch?v=${id}`, title, start_sec: +start.toFixed(3), end_sec: +end.toFixed(3) },

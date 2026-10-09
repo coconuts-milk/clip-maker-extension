@@ -219,6 +219,80 @@ async function waitVideoFile(since, tag, timeoutMs) {
     await sleep(300);
     check("× で四角を消せる", await countMasks() === 2);
 
+    // 4b) 字幕の追加: 間に挟むと、終了が次の字幕の開始に合う
+    const addRes = await editor.evaluate(async () => {
+      const d = (await chrome.storage.local.get("draft")).draft;
+      const cues = d.captions.cues;
+      if (cues.length < 2) return { skip: true };
+      document.querySelector('.tab[data-tab="captions"]').click();
+      const t = +((cues[0].start + cues[0].end) / 2).toFixed(1);
+      const s = document.getElementById("pvtime"); s.value = t; s.dispatchEvent(new Event("input"));
+      document.getElementById("addcue").click();
+      await new Promise(r => setTimeout(r, 300));
+      const d2 = (await chrome.storage.local.get("draft")).draft;
+      const added = d2.captions.cues.find(c => c.text === "" && Math.abs(c.start - t) < 0.01);
+      const next = d2.captions.cues.filter(c => c.start > t + 0.2).sort((a, b) => a.start - b.start)[0];
+      // 追加した空の行は消しておく
+      const i = d2.captions.cues.indexOf(added); d2.captions.cues.splice(i, 1); await chrome.storage.local.set({ draft: d2 });
+      return { t, added, nextStart: next && next.start, wrapH: document.getElementById("cueswrap").clientHeight, scroll: getComputedStyle(document.getElementById("cueswrap")).overflowY };
+    });
+    if (!addRes.skip) {
+      check("字幕を追加すると、開始＝今の時刻・終了＝次の字幕の開始になる", addRes.added && Math.abs(addRes.added.end - addRes.nextStart) < 0.01, addRes);
+      check("字幕の一覧は決まった高さで中だけスクロールする", addRes.wrapH <= 190 && addRes.scroll === "auto", { h: addRes.wrapH, scroll: addRes.scroll });
+    }
+
+    // 4c) 取り直し: 直した字幕は時間をずらして残り、増えた時間ぶんだけ新しく入る
+    const before = await editor.evaluate(async () => {
+      await location.reload();   // 4b で storage を直接書き換えたので読み直す
+    }).catch(() => {});
+    await sleep(1500);
+    await editor.waitForSelector("#ov", { timeout: 10000 });
+    const edited = await editor.evaluate(async () => {
+      document.querySelector('.tab[data-tab="captions"]').click();
+      const row = document.querySelector("#cues tbody tr");
+      const inp = row.querySelector("input[type=text]");
+      inp.value = "EDITED_BY_E2E"; inp.dispatchEvent(new Event("input")); inp.dispatchEvent(new Event("change"));
+      await new Promise(r => setTimeout(r, 300));
+      const d = (await chrome.storage.local.get("draft")).draft;
+      return { start: d.captions.cues[0].start, n: d.captions.cues.length, list: d.captions.cues.map(c => `${c.start}-${c.end} ${c.text.slice(0, 8)}`) };
+    });
+    await editor.evaluate(async () => {
+      document.querySelector('.tab[data-tab="settings"]').click();
+      const sec = document.querySelector("#start_sec .ts"), min = document.querySelector("#start_sec .tm");
+      let v = Number(sec.value) - 4;   // 開始を 4 秒前に広げる（長さは終了固定で伸びる）
+      if (v < 0) { v += 60; min.value = String(Number(min.value) - 1).padStart(2, "0"); min.dispatchEvent(new Event("input")); }
+      sec.value = String(v).padStart(2, "0"); sec.dispatchEvent(new Event("input"));
+      // 開始を動かすと長さ固定で終了も動くので、終了を元に戻して「前に 4 秒広げる」にする
+      const esec = document.querySelector("#end_sec .ts"), emin = document.querySelector("#end_sec .tm");
+      let e = Number(esec.value) + 4;
+      if (e >= 60) { e -= 60; emin.value = String(Number(emin.value) + 1).padStart(2, "0"); emin.dispatchEvent(new Event("input")); }
+      esec.value = String(e).padStart(2, "0"); esec.dispatchEvent(new Event("input"));
+      document.getElementById("recap").click();
+    });
+    await editor.waitForFunction(() => document.getElementById("capmsg").textContent.startsWith("取り直しました"), { timeout: 120000 });
+    const after = await editor.evaluate(async () => {
+      const d = (await chrome.storage.local.get("draft")).draft;
+      const e = d.captions.cues.find(c => c.text === "EDITED_BY_E2E");
+      return { editedStart: e && e.start, newHead: d.captions.cues.filter(c => c.start < 3.9).length, n: d.captions.cues.length, msg: document.getElementById("capmsg").textContent,
+               list: d.captions.cues.map(c => `${c.start}-${c.end} ${c.text.slice(0, 8)}`) };
+    });
+    check("取り直しても直した字幕は残り、時間が 4 秒ずれる", after.editedStart !== undefined && Math.abs(after.editedStart - (edited.start + 4)) < 0.05, { before: edited.start, after: after.editedStart });
+    check("取り直しで増えた 4 秒ぶんの字幕が足される", after.newHead > 0 && after.n > edited.n, { newHead: after.newHead, n: after.n, before: edited.list, after: after.list });
+    // 元の時間に戻す（以降の確認は元の時間で）
+    await editor.evaluate(async () => {
+      const sec = document.querySelector("#start_sec .ts"), min = document.querySelector("#start_sec .tm");
+      let v = Number(sec.value) + 4;
+      if (v >= 60) { v -= 60; min.value = String(Number(min.value) + 1).padStart(2, "0"); min.dispatchEvent(new Event("input")); }
+      sec.value = String(v).padStart(2, "0"); sec.dispatchEvent(new Event("input"));
+      const esec = document.querySelector("#end_sec .ts"), emin = document.querySelector("#end_sec .tm");
+      let e = Number(esec.value) - 4;
+      if (e < 0) { e += 60; emin.value = String(Number(emin.value) - 1).padStart(2, "0"); emin.dispatchEvent(new Event("input")); }
+      esec.value = String(e).padStart(2, "0"); esec.dispatchEvent(new Event("input"));
+      document.getElementById("recap").click();
+    });
+    await editor.waitForFunction(() => document.getElementById("capmsg").textContent.startsWith("取り直しました"), { timeout: 120000 });
+    await sleep(500);
+
     // 5) プレビュー再生
     // プレビュー再生: YouTube のタブが同じ所を再生し（音声はそちらから鳴る）、プレビューの時刻がそれに合う
     await editor.evaluate(() => { const s = document.getElementById("pvtime"); s.value = 0; s.dispatchEvent(new Event("input")); });
@@ -311,6 +385,26 @@ async function waitVideoFile(since, tag, timeoutMs) {
         const st = streamsOf(file);
         if (mode === "landscape") {
           check("音あり: 動画に音声が入っている", st.includes("video") && st.includes("audio"), st);
+          // ① 設定ファイルが一緒に保存され、読み込むと同じ字幕で編集画面が開く
+          const pj = file.replace(/\.(mp4|webm)$/, "") + ".clipmaker.json";
+          const pjOk = fs.existsSync(pj);
+          check("動画と一緒に設定ファイル（.clipmaker.json）が保存される", pjOk, pj);
+          if (pjOk) {
+            files.push(pj);
+            const saved = JSON.parse(fs.readFileSync(pj, "utf8"));
+            const re = await editor.evaluate(async (p) => {
+              const d = draftFromProject(p);
+              await chrome.storage.local.set({ draft: d });
+              location.reload();
+            }, saved).catch(() => {});
+            await sleep(2000);
+            await editor.waitForFunction(() => document.getElementById("projmsg").textContent.startsWith("読み込みました"), { timeout: 60000 }).catch(() => {});
+            const loaded = await editor.evaluate(async () => {
+              const d = (await chrome.storage.local.get("draft")).draft;
+              return { cues: d.captions.cues.length, frames: d.frames && d.frames.list ? d.frames.list.length : 0, masks: d.clip.masks.length, msg: document.getElementById("projmsg").textContent };
+            });
+            check("設定ファイルを読み込むと、字幕・四角がそのままでコマ画像が撮り直される", loaded.cues === saved.captions.cues.length && loaded.masks === saved.clip.masks.length && loaded.frames > 0, loaded);
+          }
           await editor.evaluate(() => document.querySelector("input[name=quality][value=high]").click());   // 2 本目の比較用に戻す
         }
         else {

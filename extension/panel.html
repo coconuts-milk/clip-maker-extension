@@ -23,6 +23,7 @@
   .choice label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
   .note { color: var(--sub); font-size: 14px; margin-top: 6px; min-height: 1.4em; }
   .hidden { display: none !important; }
+  .filebtn { display: block; text-align: center; font-size: 15px; padding: 8px 12px; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
   .bar { height: 8px; background: #e3e3e3; border-radius: 4px; overflow: hidden; margin-top: 4px; }
   #modelfill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 </style></head><body>
@@ -57,6 +58,11 @@
 </div>
 <button id="go" class="primary">吸い出して編集画面を開く</button>
 <div id="msg" class="msg"></div>
+<div class="subsrc">
+  <div class="cap">保存した設定</div>
+  <label class="filebtn">設定ファイルから開く<input type="file" id="loadproj" accept=".json,application/json" hidden></label>
+  <div class="note" id="projmsg"></div>
+</div>
 <script src="common.js"></script>
 <script src="asr.js"></script>
 <script src="panel.js"></script>

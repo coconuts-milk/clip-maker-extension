@@ -44,14 +44,45 @@ async function recapture() {
   $("recap").disabled = true;
   try {
     const r = await sendToTab({ type: "CLIP_CAPTURE", start: r0.start, end: r0.end, withFrames: true });
+    const oldS = draft.clip.start_sec, oldE = draft.clip.end_sec, newS = r.clip.start_sec, newE = r.clip.end_sec;
+    const shift = oldS - newS, newDur = newE - newS;
+    // 今ある字幕・コメントは時間をずらして残す（直した内容を消さない）。新しい時間の外に出たものは落とす
+    const keptCues = draft.captions.cues.map(c => ({ ...c, start: +(c.start + shift).toFixed(3), end: +(c.end + shift).toFixed(3) }))
+      .filter(c => c.end > 0 && c.start < newDur).map(c => ({ ...c, start: Math.max(0, c.start), end: Math.min(newDur, c.end) }));
+    const keptChat = draft.chat.messages.map(m => ({ ...m, t: +(m.t + shift).toFixed(2) })).filter(m => m.t >= 0 && m.t <= newDur);
+    // 増えた区間（前に広げたぶん・後ろに広げたぶん）には、新しく取った字幕・コメントを入れる
+    const parts = [];
+    if (oldS - newS > 0.05) parts.push([0, oldS - newS]);
+    if (newE - oldE > 0.05) parts.push([oldE - newS, newDur]);
+    const inParts = t => parts.some(([a, b]) => t >= a - 0.01 && t <= b + 0.01);
+    const freshCues = r.captions.cues.filter(c => inParts((c.start + c.end) / 2));
+    const freshChat = r.chat.messages.filter(m => inParts(m.t));
     draft.clip = { ...draft.clip, ...r.clip };
-    draft.captions = r.captions;
-    draft.chat = r.chat;
+    draft.captions = { ...draft.captions, cues: [...keptCues, ...freshCues].sort((a, b) => a.start - b.start) };
+    if (draft.captions.error && r.captions.error) draft.captions.error = r.captions.error; else delete draft.captions.error;
+    draft.chat = { messages: [...keptChat, ...freshChat].sort((a, b) => a.t - b.t) };
+    if (r.chat.error && !keptChat.length) draft.chat.error = r.chat.error; else delete draft.chat.error;
     draft.frames = r.frames;
-    await persist();
-    await loadFrames();
-    renderAll();
-    say("capmsg", "取り直しました。", "ok");
+    draft.needFrames = false;
+    // 音声認識で作った字幕なら、増えた区間だけ認識して足す（全部作り直さない）
+    if ((draft.subsrc === "asr" || draft.captions.source === "asr") && parts.length) {
+      const me = await chrome.tabs.getCurrent(), tab = await ytTab();
+      say("capmsg", `増えた時間の音声を取り込み中…（${Math.ceil(newDur)} 秒）`, "busy");
+      await chrome.tabs.update(tab.id, { active: true });
+      try {
+        const a = assertVer(await messageWithInject(tab.id, { type: "CLIP_CAPTURE_AUDIO", video_id: draft.clip.video_id, start: newS, end: newE }));
+        draft.audio = { rate: a.rate, pcm16: a.pcm16, sec: a.sec };
+      } finally { if (me) await chrome.tabs.update(me.id, { active: true }); }
+      await persist();
+      await loadFrames();
+      renderAll();
+      await recognizeParts(parts.filter(([a, b]) => !freshCues.some(c => c.start >= a && c.end <= b)));
+    } else {
+      await persist();
+      await loadFrames();
+      renderAll();
+    }
+    say("capmsg", shift || parts.length ? "取り直しました。今までの字幕・コメントは時間をずらして残し、増えた時間ぶんを足しました。" : "取り直しました。", "ok");
   } catch (e) { say("capmsg", String(e)); }
   finally { $("recap").disabled = false; }
 }
@@ -548,6 +579,7 @@ function asrProgress(show, pct, note) {
 
 async function runRecognition() {
   if (asrRunning) return;
+  if (draft.captions.cues.length && draft.asrDone && !confirm("今の字幕はすべて置き換わります（直した文も消えます）。続けますか？")) return;
   if (playing) await setPlaying(false);
   asrRunning = true;
   $("asr").disabled = true;
@@ -582,6 +614,84 @@ async function runRecognition() {
     asrRunning = false;
     $("asr").disabled = false;
   }
+}
+
+// 指定した区間（切り抜き開始からの秒）だけ音声認識して、字幕に足す
+async function recognizeParts(parts) {
+  if (!parts.length || !draft.audio) return;
+  if (asrRunning) return;
+  asrRunning = true;
+  $("asr").disabled = true;
+  const model = (document.querySelector("input[name=asrmodel]:checked") || {}).value || ASR_DEFAULT_MODEL;
+  try {
+    const device = await asrDevice();
+    const audio = pcm16ToFloat(draft.audio.pcm16), rate = draft.audio.rate;
+    const added = [];
+    for (const [a, b] of parts) {
+      const margin = 0.3, s0 = Math.max(0, a - margin), s1 = Math.min(clipDur(), b + margin);
+      const slice = audio.slice(Math.floor(s0 * rate), Math.ceil(s1 * rate));
+      if (slice.length < rate * 0.5) continue;
+      asrProgress(true, 0, `増えた時間（${a.toFixed(1)}〜${b.toFixed(1)} 秒）を認識中…`);
+      const r = await runAsrFloat(slice, model, device, m => asrProgress(true, m.pct, m.note));
+      for (const c of asrToCues(r.chunks, s1 - s0, slice, rate)) {
+        const cs = +(c.start + s0).toFixed(2), ce = +(c.end + s0).toFixed(2);
+        if (ce <= a || cs >= b) continue;   // 余白ぶんに掛かっただけの行は入れない
+        added.push({ start: Math.max(a, cs), end: Math.min(b, ce), text: c.text });
+      }
+    }
+    draft.captions.cues = [...draft.captions.cues, ...added].sort((x, y) => x.start - y.start);
+    draft.captions.source = "asr";
+    await persist();
+    renderCues(); draw();
+    asrProgress(true, 100, added.length ? `増えた時間に ${added.length} 行を足しました` : "増えた時間には話し声が見つかりませんでした");
+  } catch (e) {
+    asrProgress(true, 0, "");
+    say("cuesmsg", `音声認識に失敗しました: ${e && e.message ? e.message : e}`);
+  } finally {
+    asrRunning = false;
+    $("asr").disabled = false;
+  }
+}
+
+// ---- 設定ファイル ----
+
+// 読み込んだ設定（コマ画像なし）に、YouTube のタブでコマ画像を撮って足す。タブが無ければ開く
+async function fetchFramesForProject() {
+  say("projmsg", "動画のコマ画像を撮っています…（YouTube のタブが前に出ます）", "busy");
+  let tab;
+  try { tab = await ytTab(); }
+  catch (_) {
+    tab = await chrome.tabs.create({ url: `${draft.clip.url}&t=${Math.floor(draft.clip.start_sec)}s` });
+    for (let i = 0; i < 60; i++) {   // 動画が使えるようになるまで待つ
+      await new Promise(r => setTimeout(r, 500));
+      const r = await sendRawOrNull(tab.id);
+      if (r && r.ready) break;
+    }
+  }
+  const me = await chrome.tabs.getCurrent();
+  await chrome.tabs.update(tab.id, { active: true });
+  try {
+    const r = assertVer(await messageWithInject(tab.id, { type: "CLIP_CAPTURE", start: draft.clip.start_sec, end: draft.clip.end_sec, withFrames: true, framesOnly: true }));
+    draft.frames = r.frames;
+    draft.clip.title = r.clip.title || draft.clip.title;
+    draft.needFrames = false;
+    await persist();
+    await loadFrames();
+    renderAll();
+    say("projmsg", "読み込みました。", "ok");
+  } catch (e) {
+    say("projmsg", `コマ画像を撮れませんでした: ${e}`);
+  } finally { if (me) await chrome.tabs.update(me.id, { active: true }); }
+}
+async function sendRawOrNull(tabId) {
+  try { return await chrome.tabs.sendMessage(tabId, { type: "CLIP_GET_TIME" }); } catch (_) { return null; }
+}
+
+async function loadProjectFile(file) {
+  const p = JSON.parse(await file.text());
+  const d = draftFromProject(p);
+  await chrome.storage.local.set({ draft: d });
+  location.reload();   // 下書きを入れ替えたので画面ごと開き直す（init が needFrames を見てコマ画像を撮る）
 }
 
 // ---- 動画を作る ----
@@ -652,10 +762,17 @@ async function makeVideo() {
     if (me) await chrome.tabs.update(me.id, { active: true });
     say("msg", "保存中…", "busy");
     await saveRecording(tab.id, r);
+    // 設定ファイルも一緒に保存する（後から読み込んで再編集できる）
+    const pj = JSON.stringify(projectFromDraft(draft), null, 1);
+    const pjName = r.file.replace(/\.(mp4|webm)$/, "") + ".clipmaker.json";
+    try {
+      await chrome.downloads.download({ url: "data:application/json;charset=utf-8," + encodeURIComponent(pj), filename: "clip-maker/" + pjName, saveAs: false, conflictAction: "uniquify" });
+      r.project = pjName;
+    } catch (e) { r.projectError = String(e); }
     const warn = (r.method !== "WebCodecs" ? `\n（この環境ではコマの間隔が揺れる方式で録画しました: ${r.why || ""}）` : "") +
                  (r.dropped ? `\n（処理が追いつかず ${r.dropped} コマ落ちました）` : "") +
                  (r.ext === "webm" ? "\n（このブラウザは mp4 で録画できないため webm 形式です）" : "");
-    say("msg", `動画ができました。\nダウンロード ＞ clip-maker ＞ ${r.file}` + warn, warn ? "bad" : "ok");
+    say("msg", `動画ができました。\nダウンロード ＞ clip-maker ＞ ${r.file}` + (r.project ? `\n設定ファイル: ${r.project}（読み込むと再編集できます）` : `\n設定ファイルを保存できませんでした: ${r.projectError || ""}`) + warn, warn ? "bad" : "ok");
   } catch (e) {
     say("msg", String(e));
   } finally {
@@ -723,13 +840,25 @@ async function init() {
     if (row) row.querySelector("input.cx").focus();
   });
   $("addcue").addEventListener("click", () => {
-    const t = +pvTime().toFixed(1);   // 今プレビューで見ている時刻に追加する
-    draft.captions.cues.push({ start: t, end: +Math.min(clipDur(), t + 3).toFixed(1), text: "" });
+    // 今プレビューで見ている時刻に追加する。次の字幕があれば、その開始に合わせて終わる（間に挟むとき）
+    const t = +pvTime().toFixed(1);
+    const next = draft.captions.cues.filter(c => c.start > t + 0.2).sort((a, b) => a.start - b.start)[0];
+    const end = next ? +next.start.toFixed(2) : +Math.min(clipDur(), t + 3).toFixed(1);
+    draft.captions.cues.push({ start: t, end, text: "" });
     draft.captions.cues.sort((a, b) => a.start - b.start);
     persist(); renderCues(); draw();
+    const row = [...$("cues").querySelectorAll("tbody tr")].find(tr => Number(tr.querySelectorAll("input[type=number]")[0].value) === t && tr.querySelector("input[type=text]").value === "");
+    if (row) { row.scrollIntoView({ block: "nearest" }); row.querySelector("input[type=text]").focus(); }
   });
   $("save").addEventListener("click", makeVideo);
   $("asr").addEventListener("click", runRecognition);
+  $("loadproj").addEventListener("change", async () => {
+    const f = $("loadproj").files[0];
+    if (!f) return;
+    try { await loadProjectFile(f); } catch (e) { say("projmsg", String(e)); }
+    $("loadproj").value = "";
+  });
+  if (draft.needFrames) fetchFramesForProject();
   const { asrModel } = await chrome.storage.local.get("asrModel");
   document.querySelector(`input[name=asrmodel][value=${ASR_MODELS[asrModel] ? asrModel : ASR_DEFAULT_MODEL}]`).checked = true;
   document.querySelectorAll("input[name=asrmodel]").forEach(el => el.addEventListener("change", () => chrome.storage.local.set({ asrModel: el.value })));

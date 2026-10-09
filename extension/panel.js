@@ -98,3 +98,16 @@ $("go").addEventListener("click", async () => {
   } catch (e) { say(String(e)); }
   finally { $("go").disabled = false; }
 });
+
+// 保存した設定ファイル（.clipmaker.json）から編集画面を開く。コマ画像は編集画面が YouTube のタブで撮り直す
+$("loadproj").addEventListener("change", async () => {
+  const f = $("loadproj").files[0];
+  if (!f) return;
+  try {
+    const draft = draftFromProject(JSON.parse(await f.text()));
+    await chrome.storage.local.set({ draft });
+    await chrome.tabs.create({ url: chrome.runtime.getURL("editor.html") });
+    $("projmsg").textContent = "編集画面を開きました。";
+  } catch (e) { $("projmsg").textContent = String(e); }
+  $("loadproj").value = "";
+});

@@ -13,8 +13,14 @@
   .cols { display: grid; grid-template-columns: 500px 1fr; gap: 14px; align-items: start; }
   @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .filebtn { display: inline-block; font-size: 16px; padding: 8px 14px; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
+  .filebtn:hover { background: #f0f4f9; }
   .tab { flex: 1; font-size: 18px; font-weight: 700; padding: 10px 0; border-radius: 8px 8px 0 0; background: #e6e6e3; border-color: #d8d8d8; }
   .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* 字幕は 3 行ぶん、コメントは 5 行ぶんの高さで中だけスクロール（ページ全体をスクロールせずにプレビューと行き来できるように） */
+  #cueswrap { max-height: 186px; overflow-y: auto; border: 1px solid #e3e3e3; border-radius: 6px; }
+  #chatwrap { max-height: 300px; overflow-y: auto; border: 1px solid #e3e3e3; border-radius: 6px; }
+  #cueswrap thead th, #chatwrap thead th { position: sticky; top: 0; background: #fff; }
   #chat input.ct { width: 86px; font-size: 16px; }
   #chat input.cx { width: 100%; font-size: 17px; }
 
@@ -123,6 +129,13 @@
         </section>
 
         <section>
+          <h2>保存した設定</h2>
+          <p class="note" style="margin:0 0 8px">「動画を作る」のとき、動画と一緒に設定ファイル（.clipmaker.json）が保存されます。読み込むと、その動画の編集を続けられます。</p>
+          <label class="filebtn">設定ファイルを読み込む<input type="file" id="loadproj" accept=".json,application/json" hidden></label>
+          <div id="projmsg" class="msg" style="min-height:0"></div>
+        </section>
+
+        <section>
           <h2>画面の形</h2>
           <div class="choice">
             <label><input type="radio" name="mode" value="landscape"> 横</label>
@@ -176,7 +189,7 @@
           </div>
           <div id="asrprog" class="hidden"><div class="bar"><div id="asrfill"></div></div><div id="asrnote" class="note"></div></div>
           <div class="msg bad" id="cuesmsg"></div>
-          <table id="cues"><thead><tr><th></th><th>開始（秒）</th><th>終了（秒）</th><th>文</th><th></th></tr></thead><tbody></tbody></table>
+          <div id="cueswrap"><table id="cues"><thead><tr><th></th><th>開始（秒）</th><th>終了（秒）</th><th>文</th><th></th></tr></thead><tbody></tbody></table></div>
           <button id="addcue" style="margin-top:8px">字幕を追加（今の時刻に）</button>
         </section>
       </div>
@@ -196,7 +209,7 @@
         <section>
           <h2>コメント一覧</h2>
           <div class="msg bad" id="chatmsg"></div>
-          <table id="chat"><thead><tr><th></th><th>出る時刻（秒）</th><th>本文</th><th></th></tr></thead><tbody></tbody></table>
+          <div id="chatwrap"><table id="chat"><thead><tr><th></th><th>出る時刻（秒）</th><th>本文</th><th></th></tr></thead><tbody></tbody></table></div>
           <button id="addchat" style="margin-top:8px">コメントを追加（今の時刻に）</button>
         </section>
       </div>

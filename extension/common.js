@@ -8,7 +8,7 @@
 // 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
 // （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
 // 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
-const BUILD = "0.14.0";
+const BUILD = "0.15.0";
 
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
@@ -367,6 +367,32 @@ function clipFileName(clip, ext, now) {
   const d = now || new Date();
   const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
   return `${stamp}_${clip.frame.mode === "portrait" ? "short" : "horizon"}_${clip.audio ? "sound_on" : "sound_off"}.${ext}`;
+}
+
+// ---- 設定ファイル（動画と一緒に保存する .clipmaker.json。後から読み込んで再編集できる） ----
+const PROJECT_FORMAT = 1;
+function projectFromDraft(draft) {
+  const { savedCrop, ...frame } = draft.clip.frame || {};
+  return {
+    clipmaker: PROJECT_FORMAT, build: BUILD, saved_at: new Date().toISOString(),
+    clip: { ...draft.clip, frame },
+    captions: { lang: draft.captions.lang || "", source: draft.captions.source || "youtube", cues: draft.captions.cues },
+    chat: { messages: draft.chat.messages },
+    subsrc: draft.subsrc || "youtube",
+  };
+}
+// 読み込んだ設定ファイルを下書きにする。コマ画像と音声は入っていないので、needFrames を立てて後で撮る
+function draftFromProject(p) {
+  if (!p || p.clipmaker !== PROJECT_FORMAT || !p.clip || !p.clip.video_id || !Number.isFinite(p.clip.start_sec) || !Number.isFinite(p.clip.end_sec)) {
+    throw "設定ファイルの形式が違います（Clip Maker が保存した .clipmaker.json を選んでください）";
+  }
+  const clip = normalizeClip({ ...p.clip });
+  return {
+    clip,
+    captions: { lang: (p.captions && p.captions.lang) || "", source: (p.captions && p.captions.source) || "youtube", cues: (p.captions && p.captions.cues) || [] },
+    chat: { messages: (p.chat && p.chat.messages) || [] },
+    frames: null, audio: null, subsrc: p.subsrc || "youtube", asrDone: true, needFrames: true, qualitySet: true,
+  };
 }
 
 // ---- 版の食い違い ----

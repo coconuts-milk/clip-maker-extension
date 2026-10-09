@@ -107,6 +107,39 @@ const check = (name, ok, detail) => { checks.push({ name, ok: !!ok }); console.l
     const inRange = res.cues.every(c => c.start >= 0 && c.end <= LEN + 0.01 && c.end > c.start);
     check("字幕の時刻が切り抜きの中に収まっている", inRange);
     await editor.screenshot({ path: path.join(__dirname, "shots", "editor_asr.png"), fullPage: true });
+
+    // 取り直し: 前に 4 秒広げると、今の字幕は 4 秒ずれて残り、増えた 4 秒ぶんだけ新しく認識される
+    if (res.cues.length) {
+      await editor.evaluate(async () => {
+        document.querySelector('.tab[data-tab="captions"]').click();
+        const inp = document.querySelector("#cues tbody tr input[type=text]");
+        inp.value = "EDITED_BY_E2E"; inp.dispatchEvent(new Event("input")); inp.dispatchEvent(new Event("change"));
+        document.querySelector('.tab[data-tab="settings"]').click();
+        const sec = document.querySelector("#start_sec .ts"), min = document.querySelector("#start_sec .tm");
+        let v = Number(sec.value) - 4;
+        if (v < 0) { v += 60; min.value = String(Number(min.value) - 1).padStart(2, "0"); min.dispatchEvent(new Event("input")); }
+        sec.value = String(v).padStart(2, "0"); sec.dispatchEvent(new Event("input"));
+        const esec = document.querySelector("#end_sec .ts"), emin = document.querySelector("#end_sec .tm");
+        let e = Number(esec.value) + 4;
+        if (e >= 60) { e -= 60; emin.value = String(Number(emin.value) + 1).padStart(2, "0"); emin.dispatchEvent(new Event("input")); }
+        esec.value = String(e).padStart(2, "0"); esec.dispatchEvent(new Event("input"));
+        document.getElementById("recap").click();
+      });
+      let partNote = "";
+      for (let i = 0; i < 600; i++) {
+        await sleep(500);
+        partNote = await editor.evaluate(() => document.getElementById("asrnote").textContent);
+        if (/増えた時間に \d+ 行|話し声が見つかりません|失敗/.test(partNote)) break;
+      }
+      const re = await editor.evaluate(async () => {
+        const d = (await chrome.storage.local.get("draft")).draft;
+        const e = d.captions.cues.find(c => c.text === "EDITED_BY_E2E");
+        return { editedStart: e && e.start, head: d.captions.cues.filter(c => c.end <= 4.05).map(c => `${c.start}-${c.end} ${c.text}`), n: d.captions.cues.length, sec: d.audio.sec };
+      });
+      console.log("  取り直し後:", partNote, JSON.stringify(re));
+      check("取り直しで直した字幕が残り 4 秒ずれる（音声認識）", re.editedStart !== undefined && Math.abs(re.editedStart - (res.cues[0].start + 4)) < 0.05, { editedStart: re.editedStart });
+      check("増えた 4 秒ぶんだけ音声認識して足す", /増えた時間に \d+ 行/.test(partNote) && re.head.length > 0 && Math.abs(re.sec - (LEN + 4)) < 1.0, { note: partNote, head: re.head });
+    }
   } catch (e) {
     check("途中で止まらずに最後まで進む", false, e && e.stack ? e.stack : String(e));
   } finally {
