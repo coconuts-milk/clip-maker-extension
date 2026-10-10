@@ -13,6 +13,11 @@
   .cols { display: grid; grid-template-columns: 500px 1fr; gap: 14px; align-items: start; }
   @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .row3 section { padding: 12px 10px; }
+  .row3 .choice label { padding: 6px 10px; }
+  #srcwrap .choice label { padding: 4px 9px; font-size: 14px; color: #fff; background: #333; border-color: #777; }
+  #srcwrap .choice label:has(input:checked) { background: #ffd400; border-color: #ffd400; color: #222; }
   .filebtn { display: inline-block; font-size: 16px; padding: 8px 14px; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
   .filebtn:hover { background: #f0f4f9; }
   .tab { flex: 1; font-size: 18px; font-weight: 700; padding: 10px 0; border-radius: 8px 8px 0 0; background: #e6e6e3; border-color: #d8d8d8; }
@@ -22,6 +27,9 @@
   #chatwrap { max-height: 300px; overflow-y: auto; border: 1px solid #e3e3e3; border-radius: 6px; }
   #cueswrap thead th, #chatwrap thead th { position: sticky; top: 0; background: #fff; }
   #chat input.ct { width: 86px; font-size: 16px; }
+  #chat td.pop { white-space: nowrap; }
+  #chat td.pop input[type=checkbox] { width: 20px; height: 20px; vertical-align: middle; }
+  #chat td.pop input.ps { width: 56px; font-size: 15px; margin-left: 4px; }
   #chat input.cx { width: 100%; font-size: 17px; }
 
   #recap { margin-top: 12px; width: 100%; }
@@ -135,40 +143,31 @@
           <div id="projmsg" class="msg" style="min-height:0"></div>
         </section>
 
-        <section>
-          <h2>画面の形</h2>
-          <div class="choice">
-            <label><input type="radio" name="mode" value="landscape"> 横</label>
-            <label><input type="radio" name="mode" value="portrait"> 縦（ショート）</label>
-          </div>
-          <div id="portraitopts">
-            <div class="opt"><span>上下の位置</span>
-              <div class="choice" style="grid-column: 2 / 4">
-                <label><input type="radio" name="valign" value="top"> 上より</label>
-                <label><input type="radio" name="valign" value="center"> 中央</label>
-                <label><input type="radio" name="valign" value="bottom"> 下より</label>
-                <label><input type="radio" name="valign" value="free"> 自由</label>
-              </div></div>
-          </div>
-        </section>
-
-        <section>
-          <h2>音声</h2>
-          <div class="choice">
-            <label><input type="radio" name="audio" value="on"> 音あり</label>
-            <label><input type="radio" name="audio" value="off"> 音なし</label>
-          </div>
-        </section>
-
-        <section>
-          <h2>画質</h2>
-          <div class="choice">
-            <label><input type="radio" name="quality" value="high"> 高</label>
-            <label><input type="radio" name="quality" value="std"> 標準</label>
-            <label><input type="radio" name="quality" value="small"> 軽い</label>
-          </div>
-          <div class="note" id="sizenote" style="margin-top:8px;font-size:16px"></div>
-        </section>
+        <div class="row3">
+          <section>
+            <h2>画面選択</h2>
+            <div class="choice">
+              <label><input type="radio" name="mode" value="landscape"> 横</label>
+              <label><input type="radio" name="mode" value="portrait"> ショート</label>
+            </div>
+          </section>
+          <section>
+            <h2>音声</h2>
+            <div class="choice">
+              <label><input type="radio" name="audio" value="on"> あり</label>
+              <label><input type="radio" name="audio" value="off"> なし</label>
+            </div>
+          </section>
+          <section>
+            <h2>画質</h2>
+            <div class="choice">
+              <label><input type="radio" name="quality" value="high"> 高</label>
+              <label><input type="radio" name="quality" value="std"> 標準</label>
+              <label><input type="radio" name="quality" value="small"> 軽い</label>
+            </div>
+          </section>
+        </div>
+        <div class="note" id="sizenote" style="margin:-6px 0 14px 4px;font-size:16px"></div>
       </div>
 
       <div class="tabpane hidden" id="tab-captions">
@@ -207,9 +206,25 @@
           </div>
         </section>
         <section>
+          <h2>ポップアップ</h2>
+          <p class="note" style="margin:0 0 8px">一覧で「ポップ」を付けたコメントを、その時刻から白い枠で大きく出します。自分で書いた文も「コメントを追加」で入れて使えます。</p>
+          <div class="opt"><span>位置</span>
+            <div class="choice" style="grid-column: 2 / 4">
+              <label><input type="radio" name="poppos" value="top-left"> 上左</label>
+              <label><input type="radio" name="poppos" value="top-center"> 上中央</label>
+              <label><input type="radio" name="poppos" value="top-right"> 上右</label>
+              <label><input type="radio" name="poppos" value="bottom-left"> 下左</label>
+              <label><input type="radio" name="poppos" value="bottom-center"> 下中央</label>
+              <label><input type="radio" name="poppos" value="bottom-right"> 下右</label>
+            </div></div>
+          <div class="opt"><span>文字の大きさ</span><input id="pop_font" type="range" min="2" max="9" step="0.1"><span class="val" id="pop_fontv"></span></div>
+          <div class="opt"><span>出す秒数</span><input id="pop_sec" type="range" min="1" max="15" step="0.5"><span class="val" id="pop_secv"></span></div>
+          <div class="opt"><span>枠の幅</span><input id="pop_width" type="range" min="30" max="95" step="5"><span class="val" id="pop_widthv"></span></div>
+        </section>
+        <section>
           <h2>コメント一覧</h2>
           <div class="msg bad" id="chatmsg"></div>
-          <div id="chatwrap"><table id="chat"><thead><tr><th></th><th>出る時刻（秒）</th><th>本文</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div id="chatwrap"><table id="chat"><thead><tr><th></th><th>出る時刻（秒）</th><th>本文</th><th>ポップ</th><th></th></tr></thead><tbody></tbody></table></div>
           <button id="addchat" style="margin-top:8px">コメントを追加（今の時刻に）</button>
         </section>
       </div>
@@ -222,6 +237,12 @@
           <div id="srcwrap" class="hidden">
             <div class="srccap">元の動画 — 黄色い枠の中が出来上がり</div>
             <div id="srcstage"><img id="srcimg" alt=""><div id="cropbox"><div class="h nw" data-h="nw"></div><div class="h ne" data-h="ne"></div><div class="h sw" data-h="sw"></div><div class="h se" data-h="se"></div></div></div>
+            <div class="choice" id="portraitopts" style="margin-top:8px">
+              <label><input type="radio" name="valign" value="top"> 上より</label>
+              <label><input type="radio" name="valign" value="center"> 中央</label>
+              <label><input type="radio" name="valign" value="bottom"> 下より</label>
+              <label><input type="radio" name="valign" value="free"> 自由</label>
+            </div>
             <div class="srccap sub">枠は掴んで移動・角で大きさ変更。<br>動画の外は黒になります。</div>
           </div>
           <div id="stage" class="landscape"><canvas id="pv"></canvas><div id="ov"></div><div id="stagemsg"></div></div>

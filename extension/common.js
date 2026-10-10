@@ -8,7 +8,7 @@
 // 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
 // （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
 // 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
-const BUILD = "0.15.0";
+const BUILD = "0.16.0";
 
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
@@ -49,6 +49,11 @@ function defaultFrame(mode) {
 }
 // コメント: 右から左に流す。top_pct/lanes = 流す帯の上端と行数。cross_sec = 画面を横切る秒数。
 const DEFAULT_CHAT_OVERLAY = { enabled: true, style: "flow", opacity: 0.7, font_pct: 4.5, top_pct: 4, lanes: 4, cross_sec: 6 };
+// ポップアップ: 選んだコメント（や自分で書いた文）を、出す時刻から sec 秒、白い枠で大きく見せる。pos は 上/下 × 左/中央/右
+const DEFAULT_CHAT_POPUP = { pos: "top-left", font_pct: 4.5, sec: 4, width_pct: 60 };
+const POPUP_POS = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
+// 字幕の 1 行の長さの上限（文字）。これを超える文は 。！？ → 、 → 文字数 の順で分ける
+const CUE_MAX_CHARS = 22;
 // 字幕: bottom_pct = 下端からの距離（出力の高さに対する %）
 const DEFAULT_CAPTION = { font_pct: 6.9, bottom_pct: 7 };
 
@@ -64,6 +69,9 @@ function normalizeClip(clip) {
   clip.chat_overlay = { ...DEFAULT_CHAT_OVERLAY, ...(typeof o.enabled === "boolean" ? { enabled: o.enabled } : {}) };
   for (const k of ["opacity", "font_pct", "top_pct", "lanes", "cross_sec"]) if (o.style === "flow" && Number.isFinite(o[k])) clip.chat_overlay[k] = o[k];
   clip.caption = { ...DEFAULT_CAPTION, ...(clip.caption || {}) };
+  const pp = clip.chat_popup || {};
+  clip.chat_popup = { ...DEFAULT_CHAT_POPUP, ...(POPUP_POS.includes(pp.pos) ? { pos: pp.pos } : {}) };
+  for (const k of ["font_pct", "sec", "width_pct"]) if (Number.isFinite(pp[k])) clip.chat_popup[k] = pp[k];
   clip.masks = Array.isArray(clip.masks) ? clip.masks : [];
   return clip;
 }
@@ -182,6 +190,43 @@ function setupRangeControl(startTI, endTI, lenEl, onChange) {
   };
 }
 
+// 長い文を字幕 1 行に収まる長さに分ける（。！？ で分け、まだ長ければ 、で分け、それでも長ければ文字数で切る）
+function splitCueText(text, max) {
+  max = max || CUE_MAX_CHARS;
+  const out = [];
+  const bySentence = text.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean);
+  for (const s of bySentence.length ? bySentence : [text]) {
+    if (s.length <= max) { out.push(s); continue; }
+    // 、で分けつつ、max 以内で詰められるだけ詰める。、の無い長い塊だけは文字数で切る（少しの超過は切らない＝2 行に収まる）
+    const hard = max + 4;
+    let cur = "";
+    for (const piece of s.split(/(?<=[、,])/)) {
+      if (cur && (cur + piece).length > max) { out.push(cur); cur = ""; }
+      cur += piece;
+      while (cur.length > hard) { out.push(cur.slice(0, max)); cur = cur.slice(max); }
+    }
+    if (cur) out.push(cur);
+  }
+  return out.filter(Boolean);
+}
+
+// 1 行が長すぎる字幕を分けて、時間は文字数で按分する
+function splitLongCues(cues, max) {
+  const out = [];
+  for (const c of cues) {
+    const parts = splitCueText(c.text, max);
+    if (parts.length <= 1) { out.push(c); continue; }
+    const total = parts.reduce((a, p) => a + p.length, 0);
+    let t = c.start;
+    parts.forEach((p, i) => {
+      const e = i === parts.length - 1 ? c.end : t + (c.end - c.start) * p.length / total;
+      out.push({ ...c, start: +t.toFixed(3), end: +e.toFixed(3), text: p });
+      t = e;
+    });
+  }
+  return out;
+}
+
 // ---- 描画（プレビューと録画で共通） ----
 const DRAW_FONT = "Meiryo, 'Yu Gothic', 'Hiragino Sans', sans-serif";
 const CAPTION_OUTLINE_PCT = 0.7, CAPTION_MARGIN_H_PCT = 4, LINE_HEIGHT = 1.25;
@@ -273,14 +318,14 @@ function layoutFlow(ctx, chat, clip) {
   const { W, H } = outSize(clip);
   const o = clip.chat_overlay;
   const size = Math.min(W, H) * o.font_pct / 100;
-  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.map(m => `${m.t}:${m.amount || ""}:${m.text}`).join("\n")].join("|");
+  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.map(m => `${m.t}:${m.amount || ""}:${m.popup ? 1 : 0}:${m.text}`).join("\n")].join("|");
   const hit = flowCache.get(chat);
   if (hit && hit.key === key) return hit.items;
   ctx.font = `700 ${size}px ${DRAW_FONT}`;
   const lanes = Math.max(1, Math.round(o.lanes)), dur = Math.max(1, o.cross_sec), gap = size * CHAT_GAP_EM;
   const last = new Array(lanes).fill(null);   // 各行の直前のコメント
   const items = [];
-  for (const m of [...chat].sort((a, b) => a.t - b.t)) {
+  for (const m of [...chat].filter(m => !m.popup).sort((a, b) => a.t - b.t)) {
     const text = (m.amount ? `${m.amount} ` : "") + m.text;
     const w = ctx.measureText(text).width;
     const speed = (W + w) / dur;
@@ -343,6 +388,40 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
       }
     }
     ctx.globalAlpha = 1;
+  }
+
+  // ポップアップ（選んだコメントを白い枠で大きく）。複数重なれば下へ積む
+  const pp = clip.chat_popup || DEFAULT_CHAT_POPUP;
+  const pops = chat.filter(m => m.popup && t >= m.t && t < m.t + (Number(m.popup_sec) > 0 ? Number(m.popup_sec) : pp.sec)).sort((a, b) => a.t - b.t);
+  if (pops.length) {
+    const size = short * pp.font_pct / 100, pad = size * 0.6, maxW = W * pp.width_pct / 100 - pad * 2;
+    ctx.font = `700 ${size}px ${DRAW_FONT}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    const [vpos, hpos] = pp.pos.split("-");
+    let y = vpos === "top" ? H * 0.06 : H * 0.94;
+    const boxes = pops.map(m => {
+      const lines = wrapByWidth(ctx, (m.amount ? `${m.amount} ` : "") + m.text, maxW);
+      const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + pad * 2, h = lines.length * size * 1.3 + pad * 1.6;
+      return { lines, w, h, m };
+    });
+    if (vpos === "bottom") y -= boxes.reduce((a, b) => a + b.h + size * 0.4, 0) - size * 0.4;
+    for (const b of boxes) {
+      const x = hpos === "left" ? W * 0.04 : hpos === "right" ? W * 0.96 - b.w : (W - b.w) / 2;
+      ctx.fillStyle = "rgba(255,255,255,0.93)";
+      ctx.beginPath();
+      ctx.roundRect(x, y, b.w, b.h, size * 0.5);
+      ctx.fill();
+      ctx.fillStyle = "#222";
+      b.lines.forEach((line, i) => {
+        const ly = y + pad * 0.8 + i * size * 1.3;
+        if (i === 0 && b.m.amount) {
+          ctx.fillStyle = "#b8860b"; ctx.fillText(`${b.m.amount} `, x + pad, ly);
+          ctx.fillStyle = "#222"; ctx.fillText(line.slice(`${b.m.amount} `.length), x + pad + ctx.measureText(`${b.m.amount} `).width, ly);
+        } else ctx.fillText(line, x + pad, ly);
+      });
+      y += b.h + size * 0.4;
+    }
   }
 
   // 字幕（下中央・白文字黒縁）

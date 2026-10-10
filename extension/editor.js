@@ -116,6 +116,9 @@ function setupOptions() {
     bindSlider("chat_top", () => c().chat_overlay.top_pct, v => { c().chat_overlay.top_pct = v; }, v => `上から ${v}%`),
     bindSlider("chat_lanes", () => c().chat_overlay.lanes, v => { c().chat_overlay.lanes = v; }, v => `${v} 行`),
     bindSlider("chat_cross", () => c().chat_overlay.cross_sec, v => { c().chat_overlay.cross_sec = v; }, v => `${v} 秒`),
+    bindSlider("pop_font", () => c().chat_popup.font_pct, v => { c().chat_popup.font_pct = v; }, v => v.toFixed(1)),
+    bindSlider("pop_sec", () => c().chat_popup.sec, v => { c().chat_popup.sec = v; }, v => `${v} 秒`),
+    bindSlider("pop_width", () => c().chat_popup.width_pct, v => { c().chat_popup.width_pct = v; }, v => `${v}%`),
   );
   document.querySelectorAll("input[name=mode]").forEach(el => el.addEventListener("change", () => {
     // 縦の設定（囲み枠・上下の位置）は横に切り替えても覚えておく
@@ -134,6 +137,9 @@ function setupOptions() {
   document.querySelectorAll("input[name=audio]").forEach(el => el.addEventListener("change", () => {
     draft.clip.audio = el.value === "on"; persist(); renderOptions();
   }));
+  document.querySelectorAll("input[name=poppos]").forEach(el => el.addEventListener("change", () => {
+    draft.clip.chat_popup.pos = el.value; persist(); draw();
+  }));
   document.querySelectorAll("input[name=quality]").forEach(el => el.addEventListener("change", () => {
     draft.clip.quality = el.value; chrome.storage.local.set({ quality: el.value }); persist(); renderOptions();
   }));
@@ -151,6 +157,7 @@ function renderOptions() {
   document.querySelector(`input[name=audio][value=${draft.clip.audio ? "on" : "off"}]`).checked = true;
   document.querySelector(`input[name=quality][value=${draft.clip.quality}]`).checked = true;
   renderSizeNote();
+  document.querySelector(`input[name=poppos][value=${draft.clip.chat_popup.pos}]`).checked = true;
   $("chat_on").checked = !!draft.clip.chat_overlay.enabled;
   $("chatopts").classList.toggle("hidden", !draft.clip.chat_overlay.enabled);
   sliders.forEach(show => show());
@@ -559,6 +566,19 @@ function renderChat() {
     x.addEventListener("focus", () => { $("pvtime").value = Math.min(clipDur(), c.t + 1); draw(); });   // 直しているコメントが流れている所を見せる
     tdT.appendChild(x);
     tr.appendChild(tdT);
+    // ポップアップ: 付けると流れずに、出る時刻から指定の秒数だけ白い枠で大きく出る
+    const tdPop = document.createElement("td");
+    tdPop.className = "pop";
+    const pop = document.createElement("input");
+    pop.type = "checkbox"; pop.checked = !!c.popup; pop.title = "このコメントをポップアップで出す";
+    const ps = document.createElement("input");
+    ps.type = "number"; ps.className = "ps"; ps.min = "0.5"; ps.step = "0.5"; ps.title = "出す秒数（空＝設定の秒数）";
+    ps.value = c.popup_sec || ""; ps.placeholder = String(draft.clip.chat_popup.sec); ps.style.display = c.popup ? "" : "none";
+    pop.addEventListener("change", () => { c.popup = pop.checked; if (!pop.checked) delete c.popup_sec; ps.style.display = pop.checked ? "" : "none"; persist(); $("pvtime").value = c.t; draw(); });
+    ps.addEventListener("input", () => { const v = Number(ps.value); if (v > 0) c.popup_sec = v; else delete c.popup_sec; draw(); });
+    ps.addEventListener("change", persist);
+    tdPop.appendChild(pop); tdPop.appendChild(ps);
+    tr.appendChild(tdPop);
     const tdDel = document.createElement("td");
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "消す";

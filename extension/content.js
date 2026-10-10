@@ -60,7 +60,7 @@ async function fetchCaptions(start, end) {
     if (e - s < 0.05) continue;
     cues.push({ start: +(s - start).toFixed(3), end: +(e - start).toFixed(3), text: c.text });
   }
-  return { lang: r.lang, cues };
+  return { lang: r.lang, cues: splitLongCues(cues) };   // 1 行が長すぎる字幕は分ける（出来上がりで 2 行に収まる長さ）
 }
 
 // ---- チャット欄（配信アーカイブのチャットリプレイ。動画下のコメント欄ではない） ----

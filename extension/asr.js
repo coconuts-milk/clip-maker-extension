@@ -111,8 +111,7 @@ function asrToCues(chunks, dur, audio, rate) {
     if (looksHallucinated(c.text)) continue;
     const text = c.text.replace(/\s+/g, " ").trim();
     if (!text) continue;
-    let parts = text.length > ASR_MAX_CUE_CHARS ? text.split(/(?<=[。！？!?])/).map(s => s.trim()).filter(Boolean) : [text];
-    if (parts.length > 1 && parts.every(p => p.length <= 2)) parts = [text];
+    const parts = splitCueText(text, ASR_MAX_CUE_CHARS);   // 。！？ → 、 → 文字数 の順で 1 行に収まる長さに分ける
     const total = parts.reduce((a, p) => a + p.length, 0);
     let t = start;
     parts.forEach((p, i) => {

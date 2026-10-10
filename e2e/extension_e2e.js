@@ -293,6 +293,34 @@ async function waitVideoFile(since, tag, timeoutMs) {
     await editor.waitForFunction(() => document.getElementById("capmsg").textContent.startsWith("取り直しました"), { timeout: 120000 });
     await sleep(500);
 
+    // 4d) コメントのポップアップ: 付けたコメントが、その時刻に白い枠で出る（流れるコメントからは外れる）
+    const popRes = await editor.evaluate(async () => {
+      document.querySelector('.tab[data-tab="chat"]').click();
+      const row = document.querySelector("#chat tbody tr");
+      if (!row) return { skip: true };
+      const cb = row.querySelector("td.pop input[type=checkbox]");
+      cb.click();
+      await new Promise(r => setTimeout(r, 300));
+      const d = (await chrome.storage.local.get("draft")).draft;
+      const m = d.chat.messages[0];
+      const s = document.getElementById("pvtime"); s.value = m.t + 1; s.dispatchEvent(new Event("input"));
+      await new Promise(r => setTimeout(r, 200));
+      const cv = document.getElementById("pv"), g = cv.getContext("2d");
+      // 上左の枠の中（左上から少し内側）は白っぽいはず
+      const px = g.getImageData(Math.round(cv.width * 0.06), Math.round(cv.height * 0.075), 1, 1).data;
+      cb.click();   // 戻す
+      await new Promise(r => setTimeout(r, 200));
+      const d2 = (await chrome.storage.local.get("draft")).draft;
+      return { popup: !!m.popup, px: [px[0], px[1], px[2]], after: !!d2.chat.messages[0].popup, valignInPreview: !!document.querySelector("#srcwrap input[name=valign]"), row3: document.querySelectorAll(".row3 section").length };
+    });
+    if (!popRes.skip) {
+      check("コメントに「ポップ」を付けると、その時刻に白い枠で出る", popRes.popup && popRes.px.every(v => v > 200) && !popRes.after, popRes);
+      check("画面選択・音声・画質が横並びで、上下の位置は元の動画の下にある", popRes.row3 === 3 && popRes.valignInPreview, { row3: popRes.row3, valign: popRes.valignInPreview });
+    }
+    // 長い字幕は 1 行に収まる長さに分かれる（音声認識の長い一文の例）
+    const splitRes = await editor.evaluate(() => splitCueText("一周回っていうね、リスナーのみんなとと一対一でお話ができる回とか、やったことかね、皆さんご存知だと思うんですけどあるんだけど、"));
+    check("長い字幕は 、でも分けて 1 行に収まる長さになる", splitRes.length >= 3 && splitRes.every(p => p.length <= 26), splitRes);
+
     // 5) プレビュー再生
     // プレビュー再生: YouTube のタブが同じ所を再生し（音声はそちらから鳴る）、プレビューの時刻がそれに合う
     await editor.evaluate(() => { const s = document.getElementById("pvtime"); s.value = 0; s.dispatchEvent(new Event("input")); });
