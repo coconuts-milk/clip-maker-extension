@@ -296,25 +296,40 @@ async function waitVideoFile(since, tag, timeoutMs) {
     // 4d) コメントのポップアップ: 付けたコメントが、その時刻に白い枠で出る（流れるコメントからは外れる）
     const popRes = await editor.evaluate(async () => {
       document.querySelector('.tab[data-tab="chat"]').click();
-      const row = document.querySelector("#chat tbody tr");
-      if (!row) return { skip: true };
+      const d0 = (await chrome.storage.local.get("draft")).draft;
+      const before = d0.chat.messages.filter(m => m.t < 0).length;   // 1 分前からのコメント
+      const listNone = !!document.getElementById("listsec").classList.contains("hidden");
+      document.querySelector("input[name=chatmode][value=none]").click();
+      await new Promise(r => setTimeout(r, 200));
+      const noneHidesList = document.getElementById("listsec").classList.contains("hidden");
+      document.querySelector("input[name=chatmode][value=popup]").click();
+      await new Promise(r => setTimeout(r, 300));
+      const rows = [...document.querySelectorAll("#chat tbody tr")];
+      const row = rows.find(r => !r.classList.contains("before")) || rows[0];
+      if (!row) return { skip: true, before, noneHidesList };
+      const beforeRows = rows.filter(r => r.classList.contains("before")).length;
       const cb = row.querySelector("td.pop input[type=checkbox]");
       cb.click();
       await new Promise(r => setTimeout(r, 300));
       const d = (await chrome.storage.local.get("draft")).draft;
-      const m = d.chat.messages[0];
-      const s = document.getElementById("pvtime"); s.value = m.t + 1; s.dispatchEvent(new Event("input"));
+      const m = d.chat.messages.find(x => x.popup);
+      const s = document.getElementById("pvtime"); s.value = (Number.isFinite(m.popup_at) ? m.popup_at : m.t) + 1; s.dispatchEvent(new Event("input"));
       await new Promise(r => setTimeout(r, 200));
       const cv = document.getElementById("pv"), g = cv.getContext("2d");
       // 上左の枠の中（左上から少し内側）は白っぽいはず
       const px = g.getImageData(Math.round(cv.width * 0.06), Math.round(cv.height * 0.075), 1, 1).data;
       cb.click();   // 戻す
       await new Promise(r => setTimeout(r, 200));
+      document.querySelector("input[name=chatmode][value=flow]").click();
+      await new Promise(r => setTimeout(r, 200));
       const d2 = (await chrome.storage.local.get("draft")).draft;
-      return { popup: !!m.popup, px: [px[0], px[1], px[2]], after: !!d2.chat.messages[0].popup, valignInPreview: !!document.querySelector("#srcwrap input[name=valign]"), row3: document.querySelectorAll(".row3 section").length };
+      return { popup: !!m.popup, px: [px[0], px[1], px[2]], after: d2.chat.messages.some(x => x.popup), before, beforeRows, noneHidesList, flowRows: document.querySelectorAll("#chat tbody tr").length,
+               valignInPreview: !!document.querySelector("#srcwrap input[name=valign]"), row3: document.querySelectorAll(".row3 section").length };
     });
     if (!popRes.skip) {
       check("コメントに「ポップ」を付けると、その時刻に白い枠で出る", popRes.popup && popRes.px.every(v => v > 200) && !popRes.after, popRes);
+      check("表示選択「なし」ではコメント一覧を出さない", popRes.noneHidesList);
+      check("ポップアップでは 1 分前からのコメントも一覧に並び、流しでは並ばない", popRes.before > 0 && popRes.beforeRows === popRes.before && popRes.flowRows + popRes.before === popRes.beforeRows + popRes.flowRows, { before: popRes.before, beforeRows: popRes.beforeRows, flowRows: popRes.flowRows });
       check("画面選択・音声・画質が横並びで、上下の位置は元の動画の下にある", popRes.row3 === 3 && popRes.valignInPreview, { row3: popRes.row3, valign: popRes.valignInPreview });
     }
     // 長い字幕は 1 行に収まる長さに分かれる（音声認識の長い一文の例）

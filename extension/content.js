@@ -134,7 +134,8 @@ async function collectChat(v, start, end) {
       return { error: "チャットを読み込めませんでした（チャットのリプレイが表示されているか確認してください）", messages: [] };
     }
     const s0 = Math.floor(start);   // チャットの時刻表示は秒単位なので秒に丸めて範囲判定
-    const inRange = msgs.filter(m => m.t >= s0 && m.t <= Math.ceil(end));
+    // 開始の CHAT_LOOKBACK_SEC 秒前からのコメントも入れる（t が負 = 開始より前。ポップアップで拾って出すため。流すときは使わない）
+    const inRange = msgs.filter(m => m.t >= s0 - CHAT_LOOKBACK_SEC && m.t <= Math.ceil(end));
     return { messages: inRange.map(m => ({ ...m, t: m.t - s0 })) };
   } finally {
     v.currentTime = origTime;

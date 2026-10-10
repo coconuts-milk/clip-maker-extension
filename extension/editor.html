@@ -30,6 +30,8 @@
   #chat th, #cues th { white-space: nowrap; }
   #chat button.del, #cues button.del { white-space: nowrap; padding: 5px 8px; }
   #chat td.pop { white-space: nowrap; }
+  #chat td.orig { color: var(--sub); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #chat tr.before td.orig { color: #b36b00; }
   #chat td.pop input[type=checkbox] { width: 20px; height: 20px; vertical-align: middle; }
   #chat td.pop input.ps { width: 56px; font-size: 15px; margin-left: 4px; }
   #chat input.cx { width: 100%; font-size: 17px; }
@@ -164,8 +166,8 @@
             <h2>画質</h2>
             <div class="choice">
               <label><input type="radio" name="quality" value="high"> 高</label>
-              <label><input type="radio" name="quality" value="std"> 標準</label>
-              <label><input type="radio" name="quality" value="small"> 軽い</label>
+              <label><input type="radio" name="quality" value="std"> 中</label>
+              <label><input type="radio" name="quality" value="small"> 低</label>
             </div>
           </section>
         </div>
@@ -197,19 +199,28 @@
 
       <div class="tabpane hidden" id="tab-chat">
         <section>
-          <h2>コメントの見た目</h2>
-          <label class="check"><input type="checkbox" id="chat_on"> コメントを右から左に流す</label>
-          <div id="chatopts">
-            <div class="opt"><span>濃さ</span><input id="chat_opacity" type="range" min="0.2" max="1" step="0.05"><span class="val" id="chat_opacityv"></span></div>
-            <div class="opt"><span>文字の大きさ</span><input id="chat_font" type="range" min="2" max="9" step="0.1"><span class="val" id="chat_fontv"></span></div>
-            <div class="opt"><span>高さ</span><input id="chat_top" type="range" min="0" max="90" step="1"><span class="val" id="chat_topv"></span></div>
-            <div class="opt"><span>行の数</span><input id="chat_lanes" type="range" min="1" max="10" step="1"><span class="val" id="chat_lanesv"></span></div>
-            <div class="opt"><span>流れる時間</span><input id="chat_cross" type="range" min="3" max="12" step="0.5"><span class="val" id="chat_crossv"></span></div>
+          <h2>表示選択</h2>
+          <div class="choice">
+            <label><input type="radio" name="chatmode" value="none"> なし</label>
+            <label><input type="radio" name="chatmode" value="flow"> 流し</label>
+            <label><input type="radio" name="chatmode" value="popup"> ポップアップ</label>
           </div>
         </section>
-        <section>
-          <h2>ポップアップ</h2>
-          <p class="note" style="margin:0 0 8px">一覧で「ポップ」を付けたコメントを、その時刻から白い枠で大きく出します。自分で書いた文も「コメントを追加」で入れて使えます。</p>
+        <section id="flowsec">
+          <h2>流し設定</h2>
+          <div class="opt"><span>向き</span>
+            <div class="choice" style="grid-column: 2 / 4">
+              <label><input type="radio" name="chatdir" value="rtl"> 右から左</label>
+              <label><input type="radio" name="chatdir" value="ltr"> 左から右</label>
+            </div></div>
+          <div class="opt"><span>濃さ</span><input id="chat_opacity" type="range" min="0.2" max="1" step="0.05"><span class="val" id="chat_opacityv"></span></div>
+          <div class="opt"><span>文字の大きさ</span><input id="chat_font" type="range" min="2" max="9" step="0.1"><span class="val" id="chat_fontv"></span></div>
+          <div class="opt"><span>高さ</span><input id="chat_top" type="range" min="0" max="90" step="1"><span class="val" id="chat_topv"></span></div>
+          <div class="opt"><span>行の数</span><input id="chat_lanes" type="range" min="1" max="10" step="1"><span class="val" id="chat_lanesv"></span></div>
+          <div class="opt"><span>流れる時間</span><input id="chat_cross" type="range" min="3" max="12" step="0.5"><span class="val" id="chat_crossv"></span></div>
+        </section>
+        <section id="popsec">
+          <h2>ポップアップ設定</h2>
           <div class="opt"><span>位置</span>
             <div class="choice" style="grid-column: 2 / 4">
               <label><input type="radio" name="poppos" value="top-left"> 上左</label>
@@ -223,10 +234,11 @@
           <div class="opt"><span>出す秒数</span><input id="pop_sec" type="range" min="1" max="15" step="0.5"><span class="val" id="pop_secv"></span></div>
           <div class="opt"><span>枠の幅</span><input id="pop_width" type="range" min="30" max="95" step="5"><span class="val" id="pop_widthv"></span></div>
         </section>
-        <section>
+        <section id="listsec">
           <h2>コメント一覧</h2>
+          <p class="note" id="listnote" style="margin:0 0 8px"></p>
           <div class="msg bad" id="chatmsg"></div>
-          <div id="chatwrap"><table id="chat"><thead><tr><th></th><th>出る時刻（秒）</th><th>本文</th><th>ポップ</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div id="chatwrap"><table id="chat"><thead><tr id="chathead"></tr></thead><tbody></tbody></table></div>
           <button id="addchat" style="margin-top:8px">コメントを追加（今の時刻に）</button>
         </section>
       </div>

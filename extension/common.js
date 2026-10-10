@@ -8,7 +8,7 @@
 // 新しい編集画面が古い部品に命令することになり、知らない命令が無視される
 // （2026-10-04: これで「再生が止まらない・囲み枠が効かない・音なしが効かない」が起きた）。
 // 見つけ方: 開いた画面が読んだ BUILD（最新）と、Chrome が覚えている manifest の version（読み込み時点）を比べる（needsExtensionReload）。
-const BUILD = "0.16.0";
+const BUILD = "0.17.0";
 
 const MAX_CLIP_SEC = 60;   // 切り抜きの上限（Shorts の上限に合わせる）
 const DEFAULT_LEN_SEC = 30;
@@ -48,7 +48,10 @@ function defaultFrame(mode) {
   return { mode: "landscape" };
 }
 // コメント: 右から左に流す。top_pct/lanes = 流す帯の上端と行数。cross_sec = 画面を横切る秒数。
-const DEFAULT_CHAT_OVERLAY = { enabled: true, style: "flow", opacity: 0.7, font_pct: 4.5, top_pct: 4, lanes: 4, cross_sec: 6 };
+const DEFAULT_CHAT_OVERLAY = { enabled: true, style: "flow", dir: "rtl", opacity: 0.7, font_pct: 4.5, top_pct: 4, lanes: 4, cross_sec: 6 };
+// コメントの表示: none = 出さない / flow = 流す / popup = 選んだコメントをポップアップ
+const CHAT_MODES = ["none", "flow", "popup"];
+const CHAT_LOOKBACK_SEC = 60;   // ポップアップ用に、切り抜き開始の 1 分前からのコメントも取っておく（少し前のコメントを拾って出すことがあるため）
 // ポップアップ: 選んだコメント（や自分で書いた文）を、出す時刻から sec 秒、白い枠で大きく見せる。pos は 上/下 × 左/中央/右
 const DEFAULT_CHAT_POPUP = { pos: "top-left", font_pct: 4.5, sec: 4, width_pct: 60 };
 const POPUP_POS = ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"];
@@ -68,6 +71,10 @@ function normalizeClip(clip) {
   const o = clip.chat_overlay || {};
   clip.chat_overlay = { ...DEFAULT_CHAT_OVERLAY, ...(typeof o.enabled === "boolean" ? { enabled: o.enabled } : {}) };
   for (const k of ["opacity", "font_pct", "top_pct", "lanes", "cross_sec"]) if (o.style === "flow" && Number.isFinite(o[k])) clip.chat_overlay[k] = o[k];
+  if (o.dir === "ltr") clip.chat_overlay.dir = "ltr";
+  // 古い下書き（chat_mode なし）は enabled から決める
+  clip.chat_mode = CHAT_MODES.includes(clip.chat_mode) ? clip.chat_mode : (clip.chat_overlay.enabled ? "flow" : "none");
+  clip.chat_overlay.enabled = clip.chat_mode === "flow";
   clip.caption = { ...DEFAULT_CAPTION, ...(clip.caption || {}) };
   const pp = clip.chat_popup || {};
   clip.chat_popup = { ...DEFAULT_CHAT_POPUP, ...(POPUP_POS.includes(pp.pos) ? { pos: pp.pos } : {}) };
@@ -318,14 +325,14 @@ function layoutFlow(ctx, chat, clip) {
   const { W, H } = outSize(clip);
   const o = clip.chat_overlay;
   const size = Math.min(W, H) * o.font_pct / 100;
-  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.map(m => `${m.t}:${m.amount || ""}:${m.popup ? 1 : 0}:${m.text}`).join("\n")].join("|");
+  const key = [W, H, o.font_pct, o.lanes, o.cross_sec, chat.map(m => `${m.t}:${m.amount || ""}:${m.text}`).join("\n")].join("|");
   const hit = flowCache.get(chat);
   if (hit && hit.key === key) return hit.items;
   ctx.font = `700 ${size}px ${DRAW_FONT}`;
   const lanes = Math.max(1, Math.round(o.lanes)), dur = Math.max(1, o.cross_sec), gap = size * CHAT_GAP_EM;
   const last = new Array(lanes).fill(null);   // 各行の直前のコメント
   const items = [];
-  for (const m of [...chat].filter(m => !m.popup).sort((a, b) => a.t - b.t)) {
+  for (const m of [...chat].filter(m => m.t >= 0).sort((a, b) => a.t - b.t)) {   // 開始より前のコメント（ポップアップ用）は流さない
     const text = (m.amount ? `${m.amount} ` : "") + m.text;
     const w = ctx.measureText(text).width;
     const speed = (W + w) / dur;
@@ -368,7 +375,7 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
 
   // 流れるコメント（半透明）
   const o = clip.chat_overlay;
-  if (o && o.enabled && chat.length) {
+  if (clip.chat_mode === "flow" && chat.length) {
     const size = short * o.font_pct / 100, outline = Math.max(1, short * CHAT_OUTLINE_PCT / 100);
     const items = layoutFlow(ctx, chat, clip);
     ctx.font = `700 ${size}px ${DRAW_FONT}`;
@@ -379,7 +386,7 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
     for (const it of items) {
       const el = t - it.t;
       if (el < 0 || el > o.cross_sec) continue;
-      const x = W - it.speed * el, y = top + it.lane * size * CHAT_LANE_HEIGHT;
+      const x = o.dir === "ltr" ? -it.w + it.speed * el : W - it.speed * el, y = top + it.lane * size * CHAT_LANE_HEIGHT;
       if (it.amount) {
         drawOutlined(ctx, it.amount, x, y, outline, "#ffd400");   // スパチャの金額は黄
         drawOutlined(ctx, it.text.slice(it.amount.length), x + ctx.measureText(it.amount).width, y, outline);
@@ -391,8 +398,12 @@ function drawClipFrame(ctx, source, clip, cues, chat, t) {
   }
 
   // ポップアップ（選んだコメントを白い枠で大きく）。複数重なれば下へ積む
+  // 出す時刻は popup_at（無ければ元の時刻）。開始より前のコメントも、出す時刻を切り抜きの中に決めれば出せる
   const pp = clip.chat_popup || DEFAULT_CHAT_POPUP;
-  const pops = chat.filter(m => m.popup && t >= m.t && t < m.t + (Number(m.popup_sec) > 0 ? Number(m.popup_sec) : pp.sec)).sort((a, b) => a.t - b.t);
+  const popAt = m => Number.isFinite(m.popup_at) ? m.popup_at : m.t;
+  const pops = clip.chat_mode === "popup"
+    ? chat.filter(m => m.popup && t >= popAt(m) && t < popAt(m) + (Number(m.popup_sec) > 0 ? Number(m.popup_sec) : pp.sec)).sort((a, b) => popAt(a) - popAt(b))
+    : [];
   if (pops.length) {
     const size = short * pp.font_pct / 100, pad = size * 0.6, maxW = W * pp.width_pct / 100 - pad * 2;
     ctx.font = `700 ${size}px ${DRAW_FONT}`;

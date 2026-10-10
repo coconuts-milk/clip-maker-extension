@@ -49,14 +49,18 @@ async function recapture() {
     // 今ある字幕・コメントは時間をずらして残す（直した内容を消さない）。新しい時間の外に出たものは落とす
     const keptCues = draft.captions.cues.map(c => ({ ...c, start: +(c.start + shift).toFixed(3), end: +(c.end + shift).toFixed(3) }))
       .filter(c => c.end > 0 && c.start < newDur).map(c => ({ ...c, start: Math.max(0, c.start), end: Math.min(newDur, c.end) }));
-    const keptChat = draft.chat.messages.map(m => ({ ...m, t: +(m.t + shift).toFixed(2) })).filter(m => m.t >= 0 && m.t <= newDur);
+    // コメントは開始前（ポップアップ用の 1 分前から）も残す。出す時刻（popup_at）もずらす
+    const keptChat = draft.chat.messages.map(m => ({ ...m, t: +(m.t + shift).toFixed(2), ...(Number.isFinite(m.popup_at) ? { popup_at: +(m.popup_at + shift).toFixed(2) } : {}) }))
+      .filter(m => m.t >= -CHAT_LOOKBACK_SEC && m.t <= newDur);
     // 増えた区間（前に広げたぶん・後ろに広げたぶん）には、新しく取った字幕・コメントを入れる
     const parts = [];
     if (oldS - newS > 0.05) parts.push([0, oldS - newS]);
     if (newE - oldE > 0.05) parts.push([oldE - newS, newDur]);
     const inParts = t => parts.some(([a, b]) => t >= a - 0.01 && t <= b + 0.01);
     const freshCues = r.captions.cues.filter(c => inParts((c.start + c.end) / 2));
-    const freshChat = r.chat.messages.filter(m => inParts(m.t));
+    // 新しく取ったコメントは、増えた区間のものと、手元に無いもの（開始前のぶんなど）を足す
+    const same = (a, b) => Math.abs(a.t - b.t) < 0.6 && a.text === b.text;
+    const freshChat = r.chat.messages.filter(m => (inParts(m.t) || m.t < 0) && !keptChat.some(k => same(k, m)));
     draft.clip = { ...draft.clip, ...r.clip };
     draft.captions = { ...draft.captions, cues: [...keptCues, ...freshCues].sort((a, b) => a.start - b.start) };
     if (draft.captions.error && r.captions.error) draft.captions.error = r.captions.error; else delete draft.captions.error;
@@ -143,9 +147,12 @@ function setupOptions() {
   document.querySelectorAll("input[name=quality]").forEach(el => el.addEventListener("change", () => {
     draft.clip.quality = el.value; chrome.storage.local.set({ quality: el.value }); persist(); renderOptions();
   }));
-  $("chat_on").addEventListener("change", () => {
-    draft.clip.chat_overlay.enabled = $("chat_on").checked; persist(); renderOptions(); draw();
-  });
+  document.querySelectorAll("input[name=chatmode]").forEach(el => el.addEventListener("change", () => {
+    draft.clip.chat_mode = el.value; draft.clip.chat_overlay.enabled = el.value === "flow"; persist(); renderOptions(); renderChat(); draw();
+  }));
+  document.querySelectorAll("input[name=chatdir]").forEach(el => el.addEventListener("change", () => {
+    draft.clip.chat_overlay.dir = el.value; persist(); draw();
+  }));
 }
 
 function renderOptions() {
@@ -158,8 +165,12 @@ function renderOptions() {
   document.querySelector(`input[name=quality][value=${draft.clip.quality}]`).checked = true;
   renderSizeNote();
   document.querySelector(`input[name=poppos][value=${draft.clip.chat_popup.pos}]`).checked = true;
-  $("chat_on").checked = !!draft.clip.chat_overlay.enabled;
-  $("chatopts").classList.toggle("hidden", !draft.clip.chat_overlay.enabled);
+  const mode = draft.clip.chat_mode;
+  document.querySelector(`input[name=chatmode][value=${mode}]`).checked = true;
+  document.querySelector(`input[name=chatdir][value=${draft.clip.chat_overlay.dir}]`).checked = true;
+  $("flowsec").classList.toggle("hidden", mode !== "flow");
+  $("popsec").classList.toggle("hidden", mode !== "popup");
+  $("listsec").classList.toggle("hidden", mode === "none");
   sliders.forEach(show => show());
 }
 
@@ -536,24 +547,41 @@ async function playCue(cue) {
 
 // ---- コメント一覧（表示のみ） ----
 
-// コメントは直せる（時刻・本文・削除・追加）。流れるコメントの配置は本文の長さで決まるので、直すたびにプレビューを描き直す
+// コメント一覧。流し: 出る時刻と本文を直す。ポップアップ: 1 分前からのコメントも並び、出したいものに「ポップ」を付けて出す時刻・秒数を決める
 function renderChat() {
+  const mode = draft.clip.chat_mode;
+  const popup = mode === "popup";
+  const msgs = draft.chat.messages;
+  const inClip = msgs.filter(m => m.t >= 0);
   say("chatmsg", draft.chat.error ? `コメントを取得できていません: ${draft.chat.error}` :
-    draft.chat.messages.length === 0 ? "この時間にはコメントがありません。「コメントを追加」で入れられます。" : "");
+    (popup ? msgs : inClip).length === 0 ? "この時間にはコメントがありません。「コメントを追加」で入れられます。" : "");
+  $("listnote").textContent = popup ? "切り抜きの 1 分前からのコメントも並びます（元の時刻がマイナスのもの）。出したいコメントに「ポップ」を付け、出す時刻を決めてください。" : "";
+  const head = $("chathead");
+  head.textContent = "";
+  for (const t of (popup ? ["", "元の時刻", "出す時刻（秒）", "本文", "ポップ", ""] : ["", "出る時刻（秒）", "本文", ""])) { const th = document.createElement("th"); th.textContent = t; head.appendChild(th); }
   const tb = $("chat").querySelector("tbody");
   tb.textContent = "";
-  draft.chat.messages.forEach((c, i) => {
+  const popAt = m => Number.isFinite(m.popup_at) ? m.popup_at : Math.max(0, m.t);
+  msgs.forEach((c, i) => {
+    if (!popup && c.t < 0) return;   // 流し・なしでは開始より前のコメントは出さない
     const tr = document.createElement("tr");
+    if (c.t < 0) tr.className = "before";
     const tdPlay = document.createElement("td");
     const jump = document.createElement("button");
     jump.className = "playcue"; jump.textContent = "▶"; jump.title = "プレビューをこのコメントが出る時刻にする";
-    jump.addEventListener("click", () => { if (playing) setPlaying(false); $("pvtime").value = c.t; draw(); });
+    jump.addEventListener("click", () => { if (playing) setPlaying(false); $("pvtime").value = popup ? popAt(c) : c.t; draw(); });
     tdPlay.appendChild(jump);
     tr.appendChild(tdPlay);
+    if (popup) {
+      const tdO = document.createElement("td");
+      tdO.className = "orig";
+      tdO.textContent = c.t < 0 ? `${c.t} 秒（開始前）` : `${c.t} 秒`;
+      tr.appendChild(tdO);
+    }
     const tdTime = document.createElement("td");
     const t = document.createElement("input");
-    t.type = "number"; t.step = "0.1"; t.min = "0"; t.className = "ct"; t.value = c.t;
-    t.addEventListener("input", () => { c.t = Number(t.value); draw(); });
+    t.type = "number"; t.step = "0.1"; t.min = "0"; t.className = "ct"; t.value = popup ? popAt(c) : c.t;
+    t.addEventListener("input", () => { if (popup) c.popup_at = Number(t.value); else c.t = Number(t.value); draw(); });
     t.addEventListener("change", persist);
     tdTime.appendChild(t);
     tr.appendChild(tdTime);
@@ -563,22 +591,29 @@ function renderChat() {
     x.type = "text"; x.className = "cx"; x.value = c.text;
     x.addEventListener("input", () => { c.text = x.value; draw(); });
     x.addEventListener("change", persist);
-    x.addEventListener("focus", () => { $("pvtime").value = Math.min(clipDur(), c.t + 1); draw(); });   // 直しているコメントが流れている所を見せる
+    x.addEventListener("focus", () => { $("pvtime").value = Math.min(clipDur(), (popup ? popAt(c) : c.t) + 1); draw(); });
     tdT.appendChild(x);
     tr.appendChild(tdT);
-    // ポップアップ: 付けると流れずに、出る時刻から指定の秒数だけ白い枠で大きく出る
-    const tdPop = document.createElement("td");
-    tdPop.className = "pop";
-    const pop = document.createElement("input");
-    pop.type = "checkbox"; pop.checked = !!c.popup; pop.title = "このコメントをポップアップで出す";
-    const ps = document.createElement("input");
-    ps.type = "number"; ps.className = "ps"; ps.min = "0.5"; ps.step = "0.5"; ps.title = "出す秒数（空＝設定の秒数）";
-    ps.value = c.popup_sec || ""; ps.placeholder = String(draft.clip.chat_popup.sec); ps.style.display = c.popup ? "" : "none";
-    pop.addEventListener("change", () => { c.popup = pop.checked; if (!pop.checked) delete c.popup_sec; ps.style.display = pop.checked ? "" : "none"; persist(); $("pvtime").value = c.t; draw(); });
-    ps.addEventListener("input", () => { const v = Number(ps.value); if (v > 0) c.popup_sec = v; else delete c.popup_sec; draw(); });
-    ps.addEventListener("change", persist);
-    tdPop.appendChild(pop); tdPop.appendChild(ps);
-    tr.appendChild(tdPop);
+    if (popup) {
+      const tdPop = document.createElement("td");
+      tdPop.className = "pop";
+      const pop = document.createElement("input");
+      pop.type = "checkbox"; pop.checked = !!c.popup; pop.title = "このコメントをポップアップで出す";
+      const ps = document.createElement("input");
+      ps.type = "number"; ps.className = "ps"; ps.min = "0.5"; ps.step = "0.5"; ps.title = "出す秒数（空＝設定の秒数）";
+      ps.value = c.popup_sec || ""; ps.placeholder = String(draft.clip.chat_popup.sec); ps.style.display = c.popup ? "" : "none";
+      pop.addEventListener("change", () => {
+        c.popup = pop.checked;
+        if (pop.checked && !Number.isFinite(c.popup_at)) c.popup_at = Math.max(0, c.t);
+        if (!pop.checked) delete c.popup_sec;
+        ps.style.display = pop.checked ? "" : "none";
+        persist(); $("pvtime").value = popAt(c); draw();
+      });
+      ps.addEventListener("input", () => { const v = Number(ps.value); if (v > 0) c.popup_sec = v; else delete c.popup_sec; draw(); });
+      ps.addEventListener("change", persist);
+      tdPop.appendChild(pop); tdPop.appendChild(ps);
+      tr.appendChild(tdPop);
+    }
     const tdDel = document.createElement("td");
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "消す";
@@ -588,6 +623,17 @@ function renderChat() {
     tb.appendChild(tr);
   });
 }
+
+// 字幕行の ▶: その字幕の所だけ YouTube のタブで再生する（音声の確認）。プレビューもその字幕の頭に合わせる
+async function playCue(cue) {
+  if (playing) await setPlaying(false);
+  $("pvtime").value = cue.start; draw();
+  try { await sendToTab({ type: "CLIP_PLAY", t: draft.clip.start_sec + cue.start, end: draft.clip.start_sec + Math.max(cue.end, cue.start + 0.5) }); }
+  catch (e) { say("cuesmsg", String(e)); }
+}
+
+// ---- コメント一覧（表示のみ） ----
+
 
 // ---- 音声認識で字幕を作る ----
 let asrRunning = false;
@@ -853,7 +899,9 @@ async function init() {
   }));
   $("addchat").addEventListener("click", () => {
     const t = +pvTime().toFixed(1);
-    draft.chat.messages.push({ t, author: "", text: "" });
+    const m = { t, author: "", text: "" };
+    if (draft.clip.chat_mode === "popup") { m.popup = true; m.popup_at = t; }
+    draft.chat.messages.push(m);
     draft.chat.messages.sort((a, b) => a.t - b.t);
     persist(); renderChat(); draw();
     const row = [...$("chat").querySelectorAll("tbody tr")].find(tr => Number(tr.querySelector("input.ct").value) === t && tr.querySelector("input.cx").value === "");
